@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="where-the-sh" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata><name>Riverside exploration</name></metadata>
+  <wpt lat="51.5050" lon="-0.1120"><ele>9</ele><name>Lookout</name></wpt>
+  <wpt lat="51.5080" lon="-0.0980"><name>Coffee</name></wpt>
+  <trk><name>Riverside exploration</name><trkseg>
+    <trkpt lat="51.5010" lon="-0.1240"><ele>8</ele><time>2026-01-01T09:00:00Z</time></trkpt>
+    <trkpt lat="51.5020" lon="-0.1200"><ele>10</ele><time>2026-01-01T09:02:00Z</time></trkpt>
+    <trkpt lat="51.5040" lon="-0.1170"><ele>12</ele><time>2026-01-01T09:04:00Z</time></trkpt>
+    <trkpt lat="51.5050" lon="-0.1120"><ele>9</ele><time>2026-01-01T09:06:00Z</time></trkpt>
+    <trkpt lat="51.5070" lon="-0.1090"><ele>11</ele><time>2026-01-01T09:08:00Z</time></trkpt>
+    <trkpt lat="51.5080" lon="-0.1050"><ele>14</ele><time>2026-01-01T09:10:00Z</time></trkpt>
+  </trkseg><trkseg>
+    <trkpt lat="51.5080" lon="-0.0980"><ele>13</ele><time>2026-01-01T09:15:00Z</time></trkpt>
+    <trkpt lat="51.5070" lon="-0.0950"><ele>10</ele><time>2026-01-01T09:17:00Z</time></trkpt>
+    <trkpt lat="51.5050" lon="-0.0920"><time>2026-01-01T09:19:00Z</time></trkpt>
+    <trkpt lat="51.5020" lon="-0.0890"><ele>7</ele><time>2026-01-01T09:21:00Z</time></trkpt>
+  </trkseg></trk>
+  <rte><name>Optional spur</name>
+    <rtept lat="51.5050" lon="-0.1120"/>
+    <rtept lat="51.5090" lon="-0.1140"/>
+  </rte>
+</gpx>

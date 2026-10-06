@@ -1,0 +1,15 @@
+/bin/
+/reports/
+*.gpx
+!/fixtures/example.gpx
+!/fixtures/waypoints.gpx
+!/fixtures/empty.gpx
+!/fixtures/invalid.gpx
+*.fit
+*.tcx
+.env
+.env.*
+*.local.json
+*.pem
+*.key
+__pycache__/
