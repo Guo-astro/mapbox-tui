@@ -1,0 +1,94 @@
+package main
+
+import (
+	"encoding/xml"
+	"strconv"
+	"strings"
+)
+
+type tcxFloat struct{ value *float64 }
+
+func (f *tcxFloat) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var text string
+	if err := d.DecodeElement(&text, &start); err != nil {
+		return err
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		f.value = nil
+		return nil
+	}
+	value, err := strconv.ParseFloat(text, 64)
+	if err != nil {
+		return err
+	}
+	f.value = &value
+	return nil
+}
+
+type tcxPoint struct {
+	Name      string   `xml:"Name"`
+	Time      string   `xml:"Time"`
+	Elevation tcxFloat `xml:"AltitudeMeters"`
+	Position  *struct {
+		Lat tcxFloat `xml:"LatitudeDegrees"`
+		Lon tcxFloat `xml:"LongitudeDegrees"`
+	} `xml:"Position"`
+}
+
+func (p tcxPoint) point() (Point, bool) {
+	if p.Position == nil || p.Position.Lat.value == nil || p.Position.Lon.value == nil {
+		return Point{}, false
+	}
+	return Point{Lon: *p.Position.Lon.value, Lat: *p.Position.Lat.value, Elevation: p.Elevation.value, Time: optionalTime(p.Time), Name: p.Name}, true
+}
+
+func parseTCX(d *xml.Decoder) (*Track, error) {
+	t := &Track{Name: "Imported TCX"}
+	err := xmlTokens(d, "TrainingCenterDatabase", func(v xml.StartElement, parents []string) (bool, error) {
+		parent := parents[len(parents)-1]
+		switch {
+		case (v.Name.Local == "Name" && parent == "Course") || (v.Name.Local == "Id" && parent == "Activity"):
+			var name string
+			if err := d.DecodeElement(&name, &v); err != nil {
+				return true, err
+			}
+			if name != "" {
+				t.Name = name
+			}
+			return true, nil
+		case v.Name.Local == "Track" && (parent == "Lap" || parent == "Course"):
+			var track struct {
+				Points []tcxPoint `xml:"Trackpoint"`
+			}
+			if err := d.DecodeElement(&track, &v); err != nil {
+				return true, err
+			}
+			kind := "track"
+			if parent == "Course" {
+				kind = "route"
+			}
+			segment := -1
+			for _, raw := range track.Points {
+				p, ok := raw.point()
+				if !ok {
+					segment = -1
+					continue
+				}
+				t.appendPoint(p, &segment, kind)
+			}
+			return true, nil
+		case v.Name.Local == "CoursePoint" && parent == "Course":
+			var raw tcxPoint
+			if err := d.DecodeElement(&raw, &v); err != nil {
+				return true, err
+			}
+			if p, ok := raw.point(); ok {
+				t.Waypoints = append(t.Waypoints, p)
+			}
+			return true, nil
+		}
+		return false, nil
+	})
+	return t, err
+}
