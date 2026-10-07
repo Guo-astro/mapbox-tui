@@ -56,13 +56,13 @@ def main():
                 stop(process)
                 process = None
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, before)
-                print("[dev] Building wtsh…", flush=True)
+                print("[dev] Building shoe…", flush=True)
                 result = subprocess.run(["make", "build"], cwd=ROOT)
                 rebuild = False
                 changed = None
                 if result.returncode == 0:
-                    print("[dev] Starting wtsh…", flush=True)
-                    process = subprocess.Popen([str(ROOT / "bin/wtsh"), "open", *args], cwd=ROOT)
+                    print("[dev] Starting shoe…", flush=True)
+                    process = subprocess.Popen([str(ROOT / "bin/shoe"), "open", *args], cwd=ROOT)
                 else:
                     print("[dev] Build failed. Waiting for the next change…", flush=True)
             time.sleep(0.2)

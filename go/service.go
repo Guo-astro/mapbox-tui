@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"where-the-sh/shared"
+	"shell-on-earth/shared"
 )
 
 type Args struct {
@@ -129,7 +129,7 @@ func (s *Service) call(ctx context.Context, name string, a Args) (any, error) {
 }
 func serveMCP() error {
 	s := &Service{tracks: map[string]*Track{}, providers: map[string]*Provider{"demo": newProvider("demo"), "mapbox": newProvider("mapbox"), "none": newProvider("none")}}
-	server := mcp.NewServer(&mcp.Implementation{Name: "wtsh", Version: "0.1.0"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "shoe", Version: "0.1.0"}, nil)
 	var tools []*mcp.Tool
 	if e := json.Unmarshal(shared.Tools, &tools); e != nil {
 		return e

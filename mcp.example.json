@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "wtsh": {
-      "command": "/absolute/path/to/where-the-shell/bin/wtsh",
+    "shoe": {
+      "command": "/absolute/path/to/shell-on-earth/bin/shoe",
       "args": ["mcp"]
     }
   }

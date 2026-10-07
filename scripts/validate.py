@@ -8,7 +8,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV = {**os.environ, "MAPBOX_ACCESS_TOKEN": ""}
-BINS = [ROOT / "bin/wtsh"]
+BINS = [ROOT / "bin/shoe"]
 
 
 def cli(binary, mode, path, *options, success=True):

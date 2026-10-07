@@ -1,4 +1,4 @@
-module where-the-sh
+module shell-on-earth
 
 go 1.27.1
 

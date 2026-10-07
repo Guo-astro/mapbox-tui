@@ -563,7 +563,7 @@ func (m *viewer) rebuild() {
 		if m.loading {
 			message = m.ui.spinner.View() + " Loading GPX…"
 		}
-		m.content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, gradient("wtsh", uiInk)+"\n\n"+uiText.Render(message)+"\n\n"+uiMuted.Render("ctrl+o open · ? help · q quit"))
+		m.content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, gradient("shoe", uiInk)+"\n\n"+uiText.Render(message)+"\n\n"+uiMuted.Render("ctrl+o open · ? help · q quit"))
 		m.overlay()
 		return
 	}
@@ -575,7 +575,7 @@ func (m *viewer) rebuild() {
 	}
 	details := m.details()
 	provider := uiAccent.Background(uiSelected).Padding(0, 1).Render(m.provider.Kind)
-	title := gradient("wtsh", uiInk) + "  " + uiHeading.Render(m.track.Name)
+	title := gradient("shoe", uiInk) + "  " + uiHeading.Render(m.track.Name)
 	rows := []string{pad(title, m.width-lipgloss.Width(provider)-1) + " " + provider}
 	border := lipgloss.NormalBorder()
 	if m.args.ASCII {

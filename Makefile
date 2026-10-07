@@ -2,7 +2,7 @@
 ARGS ?= fixtures/example.gpx --demo
 build:
 	mkdir -p bin
-	cd go && go build -trimpath -o ../bin/wtsh .
+	cd go && go build -trimpath -o ../bin/shoe .
 dev:
 	python3 scripts/dev.py $(ARGS)
 test: build

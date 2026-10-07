@@ -9,7 +9,7 @@ import time
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SOCKET = f"where-prototype-{os.getpid()}"
+SOCKET = f"shoe-prototype-{os.getpid()}"
 ANSI = re.compile(r"\x1b\[([0-9;]*)m")
 
 
@@ -381,7 +381,7 @@ def dialogs(binary):
 
 if __name__ == "__main__":
     try:
-        for name in ("wtsh",):
+        for name in ("shoe",):
             if "--mapbox" not in sys.argv:
                 tiny_start(ROOT / "bin" / name)
             for width, height in ((120,40), (160,50)):

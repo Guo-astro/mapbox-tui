@@ -8,7 +8,7 @@ From the repository root:
 make test
 ```
 
-This builds `bin/wtsh`, runs Go tests and `go vet`, then checks the CLI and local
+This builds `bin/shoe`, runs Go tests and `go vet`, then checks the CLI and local
 stdio MCP server. It covers GPX topology and missing measurements, camera/picking,
 playback/profile behaviour, tile decoding and cache policy, token-free provider
 errors, tool schemas, and CLI/MCP result consistency. No Mapbox account is required.
@@ -35,7 +35,7 @@ python3 scripts/interactions.py --mapbox
 
 ## Manual smoke check
 
-1. Open `./bin/wtsh open fixtures/example.gpx --demo` and check separate parts and waypoints.
+1. Open `./bin/shoe open fixtures/example.gpx --demo` and check separate parts and waypoints.
 2. Pan, zoom, select points and use `f` to fit the geometry.
 3. Play with Space, change speeds, toggle elevation with `e`, and pause/seek.
 4. Open help, the command palette and GPX picker; check Esc closes each dialog.

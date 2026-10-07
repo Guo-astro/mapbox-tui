@@ -1,7 +1,7 @@
-# where-the-shell
+# Shell on Earth
 
 A personal proof of concept for viewing GPX files in a terminal. Built with Go,
-Bubble Tea, Bubbles and Lip Gloss. The executable is `wtsh`.
+Bubble Tea, Bubbles and Lip Gloss. The executable is `shoe`.
 
 - Pan, zoom and inspect tracks, routes and waypoints.
 - Show an elevation profile and replay recorded positions at adjustable speeds.
@@ -17,10 +17,10 @@ Requires Go **1.27.1** and Make. Run from the repository root:
 
 ```sh
 make build
-./bin/wtsh open fixtures/example.gpx --demo
+./bin/shoe open fixtures/example.gpx --demo
 ```
 
-Run `./bin/wtsh` without a file to open the GPX picker. Use `q` to quit.
+Run `./bin/shoe` without a file to open the GPX picker. Use `q` to quit.
 If you manage Go with mise, prefix Make commands with `mise exec go@1.27.1 --`.
 
 Braille rendering works best in a Unicode terminal. Use `--ascii` for a text
@@ -34,7 +34,7 @@ and replace it locally. The environment variable takes precedence; an explicitly
 empty value disables the local token. `.env` files aren't loaded automatically.
 
 ```sh
-./bin/wtsh open fixtures/example.gpx --provider mapbox
+./bin/shoe open fixtures/example.gpx --provider mapbox
 ```
 
 Without an explicit provider, the CLI/viewer uses Mapbox when a token is available
@@ -84,11 +84,11 @@ are prefixed with `~`; missing elevations and timestamps remain unavailable.
 The GPX path comes before options:
 
 ```sh
-./bin/wtsh summary fixtures/example.gpx
-./bin/wtsh inspect fixtures/example.gpx --point-index 3
-./bin/wtsh inspect fixtures/example.gpx --distance-m 1000
-./bin/wtsh render fixtures/example.gpx --demo --width 120 --height 40
-./bin/wtsh render fixtures/example.gpx --demo --json
+./bin/shoe summary fixtures/example.gpx
+./bin/shoe inspect fixtures/example.gpx --point-index 3
+./bin/shoe inspect fixtures/example.gpx --distance-m 1000
+./bin/shoe render fixtures/example.gpx --demo --width 120 --height 40
+./bin/shoe render fixtures/example.gpx --demo --json
 ```
 
 `summary` and `inspect` return JSON. `render` returns map text with attribution;
@@ -105,7 +105,7 @@ are 10-300 columns by 5-100 rows. Viewer options include `--ascii` and
 ## MCP
 
 ```sh
-./bin/wtsh mcp
+./bin/shoe mcp
 ```
 
 The local stdio server exposes four tools:
