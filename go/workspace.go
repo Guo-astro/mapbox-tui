@@ -72,6 +72,9 @@ func (w *Workspace) addDocument(d *Document) ItemRef {
 }
 
 func (w *Workspace) documentAtPath(path string) *workspaceDocument {
+	if path == "" {
+		return nil
+	}
 	for _, entry := range w.documents {
 		if entry.document.Path == path {
 			return entry
@@ -141,12 +144,18 @@ func (w *Workspace) selectItem(ref ItemRef) error {
 
 func (w *Workspace) activate(ref ItemRef, track *Track) {
 	w.clearSelection()
-	w.selection = &workspaceSelection{ref: ref, track: track, playback: newPlayback(track)}
+	w.selection = &workspaceSelection{ref: ref, track: track}
+	if entry, i, err := w.lookup(ref); err == nil && entry.document.Items[i].Journey != nil {
+		return
+	}
+	w.selection.playback = newPlayback(track)
 }
 
 func (w *Workspace) clearSelection() {
 	if w.selection != nil {
-		w.selection.playback.Playing = false
+		if w.selection.playback != nil {
+			w.selection.playback.Playing = false
+		}
 		w.selection = nil
 	}
 }
@@ -223,7 +232,7 @@ func (w *Workspace) clear() {
 }
 
 func (w *Workspace) position() *ridePosition {
-	if w.selection == nil {
+	if w.selection == nil || w.selection.playback == nil {
 		return nil
 	}
 	return w.selection.playback.position(w.selection.track)
@@ -233,6 +242,9 @@ func (w *Workspace) seek(index int) error {
 	outsideActiveItem := w.selection == nil || index < 0 || index >= len(w.selection.track.Points)
 	if outsideActiveItem {
 		return fmt.Errorf("point_index outside active item")
+	}
+	if w.selection.playback == nil {
+		return fmt.Errorf("planned journeys have no recorded playback")
 	}
 	w.selection.playback.seek(index)
 	return nil
@@ -274,7 +286,7 @@ func (w *Workspace) profile(width, height int) *elevationProfile {
 
 func (w *Workspace) profileItems() []sceneItem {
 	items := w.sceneItems()
-	return slices.DeleteFunc(items, func(item sceneItem) bool { return len(item.Track.Points) == 0 })
+	return slices.DeleteFunc(items, func(item sceneItem) bool { return len(item.Track.Points) == 0 || item.Planned })
 }
 
 func (w *Workspace) visibleBounds() ([4]float64, bool) {
@@ -282,7 +294,7 @@ func (w *Workspace) visibleBounds() ([4]float64, bool) {
 	var found bool
 	for _, entry := range w.documents {
 		for _, item := range entry.document.Items {
-			if entry.hidden[item.ID] {
+			if entry.hidden[item.ID] || len(item.Track.Points)+len(item.Track.Waypoints) == 0 {
 				continue
 			}
 			if !found {
@@ -318,12 +330,22 @@ func (w *Workspace) sceneItems() []sceneItem {
 	var items []sceneItem
 	for _, item := range w.items() {
 		if item.Visible {
-			items = append(items, sceneItem{
-				Ref:    item.Ref,
-				Track:  item.Item.Track,
-				Active: w.selection != nil && w.selection.ref == item.Ref,
-				Color:  item.Color,
-			})
+			scene := sceneItem{
+				Ref:     item.Ref,
+				Track:   item.Item.Track,
+				Active:  w.selection != nil && w.selection.ref == item.Ref,
+				Color:   item.Color,
+				Planned: item.Item.Journey != nil,
+			}
+			if j := item.Item.Journey; j != nil {
+				if j.Stops[0].Location != nil {
+					scene.Start = &scene.Track.Points[0].World
+				}
+				if j.Stops[len(j.Stops)-1].Location != nil {
+					scene.End = &scene.Track.Points[len(scene.Track.Points)-1].World
+				}
+			}
+			items = append(items, scene)
 		}
 	}
 	return items

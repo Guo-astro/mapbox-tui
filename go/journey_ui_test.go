@@ -1,0 +1,550 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/x/ansi"
+)
+
+func journeyViewer(t *testing.T) *viewer {
+	t.Helper()
+	t.Setenv("MAPBOX_ACCESS_TOKEN", "")
+	c, err := viewport(nil, Args{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &viewer{
+		ctx: t.Context(), provider: newProvider("none"), camera: c,
+		width: 120, height: 40, args: Args{NoAnimation: true}, showProfile: true,
+	}
+	if err := m.initUI(); err != nil {
+		t.Fatal(err)
+	}
+	m.layout()
+	return m
+}
+
+func enterJourneyCoordinate(m *viewer, index int, text string) {
+	m.editJourneyLocation(index)
+	m.ui.search.SetValue(text)
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+}
+
+func TestJourneyViewerManualEditReverseAndReopen(t *testing.T) {
+	m := journeyViewer(t)
+	var requests int
+	m.places.client.Transport = fakeTransport(func(r *http.Request) (*http.Response, error) {
+		requests++
+		t.Fatal("manual workflow made a location request")
+		return nil, nil
+	})
+	m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	if m.ui.dialog != dialogJourney || requests != 0 {
+		t.Fatal("planner did not open directly without a location request")
+	}
+	enterJourneyCoordinate(m, 0, "51.5, -0.1")
+	enterJourneyCoordinate(m, 1, "51.6, -0.2")
+	m.Update(tea.KeyPressMsg{Code: 'n', Mod: tea.ModCtrl})
+	enterJourneyCoordinate(m, 1, "51.55, -0.15")
+	j, _ := m.workspace.journey(m.planner.ref)
+	before := slices.Clone(j.Stops)
+	m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	for i, stop := range j.Stops {
+		if stop.ID != before[len(before)-1-i].ID {
+			t.Fatal("viewer did not reverse the complete journey")
+		}
+	}
+	m.Update(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
+	if !slices.Equal(j.Stops, before) {
+		t.Fatal("viewer undo did not restore reversal")
+	}
+	m.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	m.rebuild()
+	if !strings.Contains(ansi.Strip(m.content), "Journey plan") || m.activePlayback() != nil || m.profileHeight != 0 {
+		t.Fatal("manual journey became a recorded activity or elevation profile")
+	}
+	ref := m.planner.ref
+	m.Update(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	if m.ui.dialog != dialogJourney || m.planner.ref != ref || requests != 0 {
+		t.Fatal("reopening created a new journey or made a location request")
+	}
+}
+
+func TestJourneyViewerSearchOptInSessionsAndSupersededResults(t *testing.T) {
+	m := journeyViewer(t)
+	m.places.token = "test-token"
+	var requests int
+	var session string
+	m.places.client.Transport = fakeTransport(func(r *http.Request) (*http.Response, error) {
+		requests++
+		if strings.HasSuffix(r.URL.Path, "/suggest") {
+			session = r.URL.Query().Get("session_token")
+			return locationResponse(`{"suggestions":[{"mapbox_id":"station","name":"Station","place_formatted":"Brighton, UK"}]}`), nil
+		}
+		if r.URL.Query().Get("session_token") != session {
+			t.Fatal("retrieve did not use the suggestion session")
+		}
+		return locationResponse(`{"attribution":"Mapbox search credits","features":[{"geometry":{"coordinates":[-0.14,50.82]}}]}`), nil
+	})
+	m.openJourney()
+	m.editJourneyLocation(1)
+	m.ui.search.SetValue("Brighton")
+	if m.schedulePlaceSearch() != nil || requests != 0 {
+		t.Fatal("search requested Mapbox without opting in")
+	}
+	m.Update(tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if m.ui.dialog != dialogJourneySearch {
+		t.Fatal("search did not explain account-dependent option")
+	}
+	m.Update(tea.KeyPressMsg{Code: 'y'})
+	cmd := m.requestPlaceSearch(m.planner.searchID)
+	old := cmd()
+	m.ui.search.SetValue("Brighton station")
+	m.schedulePlaceSearch()
+	m.Update(old)
+	if len(m.planner.suggestions) != 0 {
+		t.Fatal("old query populated new suggestions")
+	}
+	cmd = m.requestPlaceSearch(m.planner.searchID)
+	m.Update(cmd())
+	if len(m.planner.suggestions) != 1 || !strings.Contains(m.planner.suggestions[0].Label, "Brighton, UK") {
+		t.Fatal("suggestions lost place context")
+	}
+	previousID := m.planner.searchID
+	m.Update(tea.PasteMsg{Content: " central"})
+	if len(m.planner.suggestions) != 0 || m.planner.searchID == previousID {
+		t.Fatal("pasted query retained stale suggestions")
+	}
+	cmd = m.requestPlaceSearch(m.planner.searchID)
+	m.Update(cmd())
+	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	result := cmd()
+	m.Update(result)
+	j, _ := m.workspace.journey(m.planner.ref)
+	if m.ui.dialog != dialogJourney || j.Stops[1].Location.Lat != 50.82 || requests != 4 {
+		t.Fatal("chosen destination was not retrieved/applied")
+	}
+	if !strings.Contains(m.journeyCredits(), "Mapbox search credits") {
+		t.Fatal("search attribution was lost")
+	}
+	m.editJourneyLocation(1)
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if j.Stops[1].Location.Name != "Station, Brighton, UK" || j.Stops[1].Location.Source != "Mapbox Search Box" {
+		t.Fatal("accepting an unchanged location removed provider provenance")
+	}
+	enterJourneyCoordinate(m, 1, "51.6, -0.2")
+	if !strings.Contains(m.journeyCredits(), "Mapbox search credits") {
+		t.Fatal("editing searched coordinates removed attribution")
+	}
+	m.Update(result)
+	if j.Stops[1].Location.Lat != 51.6 {
+		t.Fatal("old retrieval replaced an edited destination")
+	}
+}
+
+func TestJourneyUnicodeLocationsSurviveGeometryAndEdits(t *testing.T) {
+	m := journeyViewer(t)
+	m.openJourney()
+	j, err := m.workspace.journey(m.planner.ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	location := placeLocation{
+		Name: "Café Zürich\n東京\x1b", Lon: 8.54, Lat: 47.37,
+		Source: "Mapbox Search Box", Attribution: "© Mapbox\r\n© OpenStreetMap\x1b",
+	}
+	if err := m.workspace.addJourneyWaypoint(m.planner.ref); err != nil {
+		t.Fatal(err)
+	}
+	for _, stop := range j.Stops {
+		if err := m.workspace.setJourneyLocation(m.planner.ref, stop.ID, location); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func() {
+		t.Helper()
+		for _, stop := range j.Stops {
+			if stop.Location.Name != "Café Zürich 東京 " || stop.Location.Attribution != "© Mapbox  © OpenStreetMap " {
+				t.Fatalf("workspace corrupted printable Unicode or retained controls: %+v", stop.Location)
+			}
+		}
+		track := m.activeTrack()
+		for _, points := range [][]Point{track.Points, track.Waypoints} {
+			for _, point := range points {
+				if point.Name != "Café Zürich 東京 " {
+					t.Fatalf("derived geometry corrupted the place name: %q", point.Name)
+				}
+			}
+		}
+		m.rebuild()
+		text := ansi.Strip(m.content)
+		if !strings.Contains(text, "Café Zürich 東京") || !strings.Contains(m.journeyCredits(), "© Mapbox") {
+			t.Fatal("journey display or credits lost printable Unicode")
+		}
+	}
+	check()
+	m.editJourneyLocation(0)
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.Update(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
+	check()
+	m.Update(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
+	check()
+}
+
+func TestJourneySuggestionCreditsAreVisibleAndTransient(t *testing.T) {
+	m := journeyViewer(t)
+	m.openJourney()
+	m.editJourneyLocation(0)
+	m.planner.online = true
+	m.ui.search.SetValue("Zürich")
+	m.schedulePlaceSearch()
+	m.places.token = "token"
+	m.places.client.Transport = fakeTransport(func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/suggest") {
+			return locationResponse(`{"attribution":"© Mapbox suggestions\n","suggestions":[{"mapbox_id":"id","name":"Zürich"}]}`), nil
+		}
+		return locationResponse(`{"attribution":"© Mapbox location","features":[{"geometry":{"coordinates":[8.54,47.37]}}]}`), nil
+	})
+	cmd := m.requestPlaceSearch(m.planner.searchID)
+	m.Update(cmd())
+	m.rebuild()
+	if !strings.Contains(ansi.Strip(m.content), "© Mapbox suggestions") {
+		t.Fatal("suggestions were displayed without provider attribution")
+	}
+	m.ui.search.SetValue("Bern")
+	m.schedulePlaceSearch()
+	if m.journeyCredits() != "" {
+		t.Fatal("clearing suggestions retained their attribution")
+	}
+	m.Update(m.requestPlaceSearch(m.planner.searchID)())
+	m.closeDialog()
+	if m.journeyCredits() != "" {
+		t.Fatal("closing the editor retained suggestion attribution")
+	}
+	m.editJourneyLocation(0)
+	m.ui.search.SetValue("Zürich")
+	m.schedulePlaceSearch()
+	m.Update(m.requestPlaceSearch(m.planner.searchID)())
+	_, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.Update(cmd())
+	if !strings.Contains(m.journeyCredits(), "© Mapbox location") ||
+		strings.Contains(m.journeyCredits(), "© Mapbox suggestions") {
+		t.Fatal("retrieval did not replace temporary suggestion credits with location credits")
+	}
+}
+
+func TestJourneyDistinctCreditsKeepFooterSingleLine(t *testing.T) {
+	for _, size := range [][2]int{{120, 40}, {70, 24}, {70, 18}, {30, 12}} {
+		for _, ascii := range []bool{false, true} {
+			m := journeyViewer(t)
+			m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+			m.settings.ASCII = ascii
+			m.openJourney()
+			j, _ := m.workspace.journey(m.planner.ref)
+			for i, stop := range j.Stops {
+				if err := m.workspace.setJourneyLocation(m.planner.ref, stop.ID, placeLocation{
+					Lon: float64(i) * .01, Lat: 51,
+					Attribution: fmt.Sprintf("© C%d", i+1),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m.closeDialog()
+			m.rebuild()
+			if lipgloss.Height(m.content) > size[1] || lipgloss.Width(m.content) > size[0] {
+				t.Fatalf("distinct credits overflowed %v, ASCII %v", size, ascii)
+			}
+			lines := strings.Split(ansi.Strip(m.content), "\n")
+			footer := lines[len(lines)-1]
+			if !strings.Contains(footer, "© C1 © C2") {
+				t.Fatalf("footer lost distinct credits: %q", footer)
+			}
+			m.openDialog(dialogCredits)
+			_, _, _ = m.dialogContent(60, 17)
+			if !strings.Contains(m.journeyCredits(), "© C1\n© C2") {
+				t.Fatal("credits dialog no longer has separately listed credits")
+			}
+		}
+	}
+}
+
+func TestJourneyViewerRequestsCancelOnCloseAndRemoval(t *testing.T) {
+	m := journeyViewer(t)
+	m.places.token = "token"
+	var requestContext context.Context
+	m.places.client.Transport = fakeTransport(func(r *http.Request) (*http.Response, error) {
+		requestContext = r.Context()
+		return locationResponse(`{"suggestions":[]}`), nil
+	})
+	m.openJourney()
+	m.editJourneyLocation(1)
+	m.planner.online = true
+	m.ui.search.SetValue("Place")
+	m.schedulePlaceSearch()
+	cmd := m.requestPlaceSearch(m.planner.searchID)
+	result := cmd()
+	m.closeDialog()
+	if requestContext.Err() == nil {
+		t.Fatal("closing planner did not cancel place lookup")
+	}
+	m.Update(result)
+	m.openJourney()
+	if m.ui.dialog != dialogJourney {
+		t.Fatal("reopening planner did not return to the journey")
+	}
+	m.editJourneyLocation(1)
+	m.planner.online = true
+	m.ui.search.SetValue("Place")
+	m.schedulePlaceSearch()
+	cmd = m.requestPlaceSearch(m.planner.searchID)
+	m.closeDialog()
+	result = cmd()
+	if err := m.workspace.removeItem(m.planner.ref); err != nil {
+		t.Fatal(err)
+	}
+	m.Update(result)
+	if len(m.workspace.documents) != 0 {
+		t.Fatal("late location result revived a removed journey")
+	}
+}
+
+func TestJourneyViewerRotatesExpiredAndFullSearchSessions(t *testing.T) {
+	for _, name := range []string{"expired", "full"} {
+		t.Run(name, func(t *testing.T) {
+			m := journeyViewer(t)
+			m.openJourney()
+			m.editJourneyLocation(1)
+			m.planner.online = true
+			m.ui.search.SetValue("Place")
+			m.schedulePlaceSearch()
+			m.planner.session = "old-session"
+			m.planner.sessionStarted = time.Now()
+			if name == "expired" {
+				m.planner.sessionStarted = time.Now().Add(-3 * time.Minute)
+			} else {
+				m.planner.sessionRequests = 49
+			}
+			m.requestPlaceSearch(m.planner.searchID)
+			if m.planner.session == "old-session" || m.planner.sessionRequests != 1 {
+				t.Fatal("ended search session was reused")
+			}
+			m.closeDialog()
+		})
+	}
+}
+
+func TestJourneyDebounceDoesNotSurviveReplacingPlan(t *testing.T) {
+	m := journeyViewer(t)
+	m.openJourney()
+	m.editJourneyLocation(0)
+	m.planner.online = true
+	m.ui.search.SetValue("Old place")
+	m.schedulePlaceSearch()
+	old := placeSearchReady{id: m.planner.searchID}
+	m.closeDialog()
+	if err := m.workspace.removeItem(m.planner.ref); err != nil {
+		t.Fatal(err)
+	}
+	m.openJourney()
+	m.editJourneyLocation(0)
+	m.ui.search.SetValue("New place")
+	m.schedulePlaceSearch()
+	if _, cmd := m.Update(old); cmd != nil || m.planner.searchBusy {
+		t.Fatal("an old plan's debounce started a new plan's request")
+	}
+}
+
+func TestJourneyClipboardKeepsEditorOwnership(t *testing.T) {
+	pasteKey := tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl}
+	t.Run("same opening after query edits", func(t *testing.T) {
+		m := journeyViewer(t)
+		m.openJourney()
+		m.editJourneyLocation(0)
+		queued := m.clipboardCommand(pasteKey, func() tea.Msg { return tea.PasteMsg{Content: " pasted"} })
+		m.ui.search.SetValue("typed")
+		m.schedulePlaceSearch()
+		m.planner.suggestions = []placeSuggestion{{ID: "old", Label: "Old suggestion"}}
+		m.Update(queued())
+		if m.ui.search.Value() != "typed pasted" || len(m.planner.suggestions) != 0 {
+			t.Fatal("owned clipboard result did not insert and invalidate suggestions")
+		}
+	})
+	for _, scenario := range []string{"different stop", "same stop reopened", "command palette", "palette to journey"} {
+		t.Run(scenario, func(t *testing.T) {
+			m := journeyViewer(t)
+			m.openJourney()
+			m.editJourneyLocation(0)
+			if scenario == "palette to journey" {
+				m.openDialog(dialogCommands)
+			}
+			queued := m.clipboardCommand(pasteKey, func() tea.Msg { return tea.PasteMsg{Content: "old clipboard"} })
+			switch scenario {
+			case "different stop", "palette to journey":
+				m.editJourneyLocation(1)
+			case "same stop reopened":
+				m.closeDialog()
+				m.openJourney()
+				m.editJourneyLocation(0)
+			case "command palette":
+				m.openDialog(dialogCommands)
+			}
+			m.ui.search.SetValue("new input")
+			m.ui.notice = "existing notice"
+			generation := m.planner.searchID
+			idle := func() tea.Msg { return nil }
+			var deliver func(tea.Cmd)
+			deliver = func(cmd tea.Cmd) {
+				msg := cmd()
+				if batch, ok := msg.(tea.BatchMsg); ok {
+					for _, child := range batch {
+						deliver(child)
+					}
+					return
+				}
+				m.Update(msg)
+			}
+			deliver(tea.Batch(tea.Batch(queued, idle), idle))
+			if m.ui.search.Value() != "new input" || m.ui.notice != "existing notice" || m.planner.searchID != generation {
+				t.Fatal("stale clipboard result modified a different input")
+			}
+		})
+	}
+}
+
+func TestJourneyClipboardOpaqueErrorIsOwnerScoped(t *testing.T) {
+	previous := clipboard.Unsupported
+	clipboard.Unsupported = true
+	t.Cleanup(func() { clipboard.Unsupported = previous })
+	for _, stale := range []bool{false, true} {
+		m := journeyViewer(t)
+		m.openJourney()
+		m.editJourneyLocation(0)
+		queued := m.clipboardCommand(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl}, textinput.Paste)
+		if stale {
+			m.editJourneyLocation(1)
+		}
+		m.Update(queued())
+		if (m.ui.search.Err == nil) != stale {
+			t.Fatalf("clipboard error ownership incorrect, stale=%v: %v", stale, m.ui.search.Err)
+		}
+	}
+}
+
+func TestJourneyNoticesKeepSelectedActionVisible(t *testing.T) {
+	for _, size := range [][2]int{{70, 18}, {30, 12}} {
+		for _, ascii := range []bool{false, true} {
+			m := journeyViewer(t)
+			m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+			m.settings.ASCII = ascii
+			m.openJourney()
+			m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
+			m.Update(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModAlt})
+			m.rebuild()
+			if m.ui.notice == "" || !strings.Contains(ansi.Strip(m.content), "> Show journey on map") {
+				t.Fatalf("notice hid selected action at %v, ASCII %v", size, ascii)
+			}
+		}
+	}
+}
+
+func TestJourneyCoordinateInspectionAndPlaybackCommands(t *testing.T) {
+	m := journeyViewer(t)
+	m.openJourney()
+	enterJourneyCoordinate(m, 0, "51.5, -0.1")
+	enterJourneyCoordinate(m, 1, "51.6, -0.2")
+	m.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+	type clickTarget struct {
+		name string
+		x, y int
+	}
+	targets := []clickTarget{{name: "off route", x: 2, y: 3}}
+	g := renderScene(m.camera, nil, m.workspace.sceneItems(), nil)
+	var endpoint, line bool
+	for y := range g.Height {
+		for x := range g.Width {
+			cell := g.Cells[y*g.Width+x]
+			name := ""
+			unlabelledLine := cell.Bits != 0 && cell.Text == 0
+			if cell.Text == 'S' && !endpoint {
+				name, endpoint = "endpoint", true
+			} else if unlabelledLine && !line {
+				name, line = "line", true
+			}
+			if name != "" {
+				targets = append(targets, clickTarget{name: name, x: x + 1, y: y + 2})
+			}
+		}
+	}
+	if !endpoint || !line {
+		t.Fatal("journey did not render an inspectable line and endpoint")
+	}
+	for _, target := range targets {
+		t.Run(target.name, func(t *testing.T) {
+			m.Update(tea.MouseClickMsg{X: target.x, Y: target.y, Button: tea.MouseLeft})
+			m.Update(tea.MouseReleaseMsg{X: target.x, Y: target.y, Button: tea.MouseLeft})
+			if m.inspected == nil {
+				t.Fatal("journey click did not inspect coordinates")
+			}
+			m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			m.rebuild()
+			text := ansi.Strip(m.content)
+			if !strings.Contains(text, fmt.Sprintf("Lat %.6f", m.inspected.Y)) ||
+				!strings.Contains(text, fmt.Sprintf("Lon %.6f", m.inspected.X)) {
+				t.Fatal("journey inspection omitted the clicked coordinates")
+			}
+			m.closeDialog()
+		})
+	}
+	m.openDialog(dialogCommands)
+	for _, command := range m.commands() {
+		if command.action == "speed" || command.action == "play" || command.action == "center" {
+			t.Fatal("journey exposed an unavailable playback command")
+		}
+	}
+	d, err := loadDocument("../fixtures/example.gpx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.workspace.addDocument(d)
+	var playbackCommands int
+	for _, command := range m.commands() {
+		if command.action == "speed" || command.action == "play" || command.action == "center" {
+			playbackCommands++
+		}
+	}
+	if playbackCommands != 3 {
+		t.Fatal("recorded activity lost playback commands")
+	}
+}
+
+func TestJourneyDialogsFitWideNarrowAndASCIITerminals(t *testing.T) {
+	for _, size := range [][2]int{{120, 40}, {70, 24}, {70, 18}, {30, 12}} {
+		for _, ascii := range []bool{false, true} {
+			m := journeyViewer(t)
+			m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+			m.settings.ASCII = ascii
+			m.openJourney()
+			for _, dialog := range []dialogKind{dialogJourney, dialogJourneyLocation, dialogJourneySearch} {
+				m.ui.dialog = dialog
+				m.rebuild()
+				if lipgloss.Width(m.content) > size[0] || lipgloss.Height(m.content) > size[1] {
+					t.Fatalf("dialog %d overflowed %v, ASCII %v: %dx%d", dialog, size, ascii,
+						lipgloss.Width(m.content), lipgloss.Height(m.content))
+				}
+				if ascii && strings.ContainsFunc(m.content, func(r rune) bool { return r >= 0x2800 && r <= 0x28ff }) {
+					t.Fatal("ASCII planner rendered Braille")
+				}
+			}
+		}
+	}
+}
