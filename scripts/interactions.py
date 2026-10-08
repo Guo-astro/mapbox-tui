@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import time
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SOCKET = f"shoe-prototype-{os.getpid()}"
@@ -64,10 +65,10 @@ def xterm_color(n):
     return "#" + "".join(f"{levels[v]:02x}" for v in (n // 36, n // 6 % 6, n % 6))
 
 
-def save_svg(path, width, height):
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width*9}" height="{height*18}" viewBox="0 0 {width*9} {height*18}">', '<rect width="100%" height="100%" fill="#182431"/>', '<g font-family="DejaVu Sans Mono,monospace" font-size="15" xml:space="preserve">']
-    fg = "#8d9daa"
-    bg = "#182431"
+def save_svg(path, width, height, background="#1e1e2e", foreground="#cdd6f4"):
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width*9}" height="{height*18}" viewBox="0 0 {width*9} {height*18}">', f'<rect width="100%" height="100%" fill="{background}"/>', '<g font-family="DejaVu Sans Mono,monospace" font-size="15" xml:space="preserve">']
+    fg = foreground
+    bg = background
     for y, line in enumerate(capture(colors=True).splitlines()):
         x, position = 0, 0
         for match in [*ANSI.finditer(line), None]:
@@ -84,7 +85,7 @@ def save_svg(path, width, height):
                         expanded.append(char)
                         column += 1
                 chunk = "".join(expanded)
-                if bg != "#182431":
+                if bg != background:
                     out.append(f'<rect x="{x*9}" y="{y*18}" width="{len(chunk)*9}" height="18" fill="{bg}"/>')
                 out.append(f'<text x="{x*9}" y="{y*18+14}" fill="{fg}">{html.escape(chunk)}</text>')
                 x += len(chunk)
@@ -94,11 +95,11 @@ def save_svg(path, width, height):
                 while i < len(nums):
                     n = nums[i]
                     if n in (0, 39):
-                        fg = "#8d9daa"
+                        fg = foreground
                         if n == 0:
-                            bg = "#182431"
+                            bg = background
                     elif n == 49:
-                        bg = "#182431"
+                        bg = background
                     elif 30 <= n <= 37:
                         fg = xterm_color(n - 30)
                     elif 40 <= n <= 47:
@@ -130,7 +131,7 @@ def scenario(binary, width, height):
         assert "No basemap" in initial and "token missing" not in initial, "token-free GPX viewing did not use a quiet empty canvas"
         zoom = re.search(r"Zoom ([\d.]+)", initial).group(1)
         send("]")
-        wait_for(lambda s: "Point 2 / 12" in s)
+        wait_for(lambda s: "Point 2 / 10" in s)
         send(".")
         wait_for(lambda s: "Bearing 10" in s)
         send("n")
@@ -176,14 +177,14 @@ def scenario(binary, width, height):
             if 2 <= y < height - 4 and 'S' in row[:width-30]:
                 x = row.index('S')
                 sgr(0, x+1, y+1); sgr(0, x+1, y+1, release=True)
-                wait_for(lambda s: "Point 1 / 12" in s)
+                wait_for(lambda s: any(label in s for label in ("Point 1 / 10", "Point 7 / 10", "Point 1 / 2")))
                 break
         else:
             raise AssertionError("start marker not visible")
         send("a")
         wait_for(lambda s: not any(0x2800 <= ord(c) <= 0x28ff for c in s))
         send("v")
-        wait_for(lambda s: "https://www.mapbox.com/about/maps/" in s)
+        wait_for(lambda s: "Provider credits" in s and "No basemap" in s)
         send("v")
         tmux("resize-window", "-t", "poc:0", "-x", "70", "-y", "24")
         wait_for(lambda s: "[ ] select; PgUp/PgDn" in s)
@@ -206,7 +207,7 @@ def live_capture(binary, width, height):
         save_svg(folder / f"{binary.name}-mapbox-{width}x{height}.svg", width, height)
         stats = re.search(r"(\d+ / \d+ / \d+)", screen).group(1)
         send("]")
-        screen = wait_for(lambda s: "Point 5 / 12" in s)
+        screen = wait_for(lambda s: "Point 5 / 10" in s)
         assert re.search(r"(\d+ / \d+ / \d+)", screen).group(1) == stats, "selection refetched tiles"
         send("q")
         wait_for(lambda s: "TERMINAL_RESTORED=TrueEXIT=0" in re.sub(r"\s+", "", s))
@@ -258,7 +259,7 @@ def profile_playback(binary, width, height):
         send("S")
         wait_for(lambda s:"Paused 60x" in s)
         tmux("send-keys","-t","poc:0.0","End")
-        wait_for(lambda s:"Point 12 / 12" in s and "Finished 60x" in s)
+        wait_for(lambda s:"Point 10 / 10" in s and "Finished 60x" in s)
         send(" ")
         wait_for(lambda s:"Playing 60x" in s and "Between 1–2" in s)
         send("h")
@@ -389,12 +390,12 @@ def dialogs(binary):
         send("\x10")
         wait_for(lambda s: "Commands" in s and "Type a command" in s)
         send("free roam")
-        wait_for(lambda s: "Free roam (clear route)" in s)
+        wait_for(lambda s: "Free roam (clear selection)" in s)
         tmux("send-keys", "-t", "poc:0.0", "Enter")
-        wait_for(lambda s: "Map details" in s and "Commands" not in s and "Elevation profile" not in s)
+        wait_for(lambda s: "Map details" in s and "Commands" not in s and "Elevation profile" in s)
         send("q")
         wait_for(lambda s: "TERMINAL_RESTORED=TrueEXIT=0" in re.sub(r"\s+", "", s))
-        print(f"{binary.name}: startup/file picker, failed-load recovery, modal input isolation, command filtering, speed picker, file switching and clearing the route passed")
+        print(f"{binary.name}: startup/file picker, failed-load recovery, modal input isolation, command filtering, speed picker, file additions and free roaming passed")
     finally:
         tmux("kill-session", "-t", "poc", check=False)
 
@@ -431,7 +432,7 @@ def free_roam(binary, live=False):
         tmux("send-keys", "-t", "poc:0.0", "Escape")
         wait_for(lambda s: "↑/↓ scroll" not in s)
         send("?")
-        wait_for(lambda s: "reset world view" in s and "Keyboard shortcuts" in s)
+        wait_for(lambda s: "fit all visible" in s and "Keyboard shortcuts" in s)
         tmux("send-keys", "-t", "poc:0.0", "Escape")
         wait_for(lambda s: "Keyboard shortcuts" not in s)
         folder = ROOT / "reports/generated"
@@ -439,12 +440,156 @@ def free_roam(binary, live=False):
         settled()
         save_svg(folder / f"{binary.name}-free-roam{'-mapbox' if live else ''}-120x40.svg", 120, 40)
         tmux("resize-window", "-t", "poc:0", "-x", "70", "-y", "24")
-        wait_for(lambda s: "Free roam | zoom" in s and "ctrl+o open file" in s)
+        wait_for(lambda s: "Free roam | zoom" in s and "ctrl+l loaded files" in s)
         send("q")
         wait_for(lambda s: "TERMINAL_RESTORED=TrueEXIT=0" in re.sub(r"\s+", "", s))
         print(f"{binary.name}: {'live Mapbox' if live else 'offline'} free roam, keyboard/mouse navigation, coordinate inspection, help, compact resize and terminal restoration passed")
     finally:
         tmux("kill-session", "-t", "poc", check=False)
+
+
+def theme_switching(binary, width, height):
+    command = shlex.join(["env", "MAPBOX_ACCESS_TOKEN=", "TERM=xterm-256color", "COLORTERM=truecolor", "python3", str(ROOT / "scripts/terminal_runner.py"), str(binary), str(ROOT / "fixtures/example.gpx"), "--theme", "catppuccin"])
+    tmux("new-session", "-d", "-s", "poc", "-x", str(width), "-y", str(height), command)
+    try:
+        wait_for(lambda s: "Elevation profile" in s and "Paused 1x" in s)
+        baseline = settled()
+        original_colors = capture(colors=True)
+        send("\x10")
+        wait_for(lambda s: "Commands" in s)
+        send("theme")
+        wait_for(lambda s: "Choose colour theme" in s)
+        tmux("send-keys", "-t", "poc:0.0", "Enter")
+        wait_for(lambda s: "Colour theme" in s and "Catppuccin (current)" in s)
+        for name, background, foreground in (("Tokyo Night", "#1a1b26", "#a9b1d6"), ("Catppuccin Latte", "#eff1f5", "#4c4f69"), ("Catppuccin", "#1e1e2e", "#cdd6f4")):
+            send("\x14")
+            wait_for(lambda s: f"{name} (current)" in s)
+            save_svg(ROOT / "reports/generated" / f"{binary.name}-theme-{name.lower().replace(' ', '-')}-{width}x{height}.svg", width, height, background, foreground)
+        tmux("send-keys", "-t", "poc:0.0", "Escape")
+        wait_for(lambda s: "Colour theme" not in s)
+        assert settled() == baseline, "theme picker changed geometry, selection or playback"
+        send("\x14")
+        wait_for(lambda s: capture(colors=True) != original_colors)
+        assert settled() == baseline, "palette change affected map text or layout"
+        for key, label in (("?", "Keyboard shortcuts"), ("v", "Provider credits"), ("p", "Playback speed multiplier"), ("\x0c", "Loaded files"), ("\x0f", "Open track file"), ("\x10", "Commands")):
+            send(key)
+            wait_for(lambda s: label in s)
+            if label == "Commands":
+                send("theme")
+                wait_for(lambda s: "Choose colour theme" in s)
+            before = settled()
+            colors = capture(colors=True)
+            send("\x14")
+            wait_for(lambda s: capture(colors=True) != colors)
+            assert settled() == before, f"theme cycling reset the open {label} dialog"
+            tmux("send-keys", "-t", "poc:0.0", "Escape")
+            wait_for(lambda s: label not in s)
+        send("a ")
+        wait_for(lambda s: "Playing 1x" in s and not any(0x2800 <= ord(c) <= 0x28ff for c in s))
+        send("p\x14")
+        wait_for(lambda s: "Playback speed multiplier" in s and "Playing 1x" in s)
+        tmux("send-keys", "-t", "poc:0.0", "Escape")
+        wait_for(lambda s: "Playback speed multiplier" not in s and "Playing 1x" in s)
+        send(" q")
+        wait_for(lambda s: "TERMINAL_RESTORED=TrueEXIT=0" in re.sub(r"\s+", "", s))
+        print(f"{binary.name} {width}×{height}: three themes, modal/widget recolouring, unchanged geometry, ASCII playback and terminal restoration passed")
+    finally:
+        tmux("kill-session", "-t", "poc", check=False)
+
+
+def workspace_controls(binary):
+    command = shlex.join(["env", "MAPBOX_ACCESS_TOKEN=", "TERM=xterm-256color", "COLORTERM=truecolor", "python3", str(ROOT / "scripts/terminal_runner.py"), str(binary), str(ROOT / "fixtures/example.gpx"), str(ROOT / "fixtures/waypoints.gpx")])
+    tmux("new-session", "-d", "-s", "poc", "-x", "120", "-y", "40", command)
+    try:
+        wait_for(lambda s: "2 files" in s and "No track points" in s and "Loading track file" not in s)
+        send("\x0c")
+        wait_for(lambda s: "Loaded files" in s and "example.gpx" in s and "waypoints.gpx" in s)
+        save_svg(ROOT / "reports/generated" / f"{binary.name}-workspace-120x40.svg", 120, 40)
+        send(" ")
+        tmux("send-keys", "-t", "poc:0.0", "Escape")
+        wait_for(lambda s: "No active item" in s and "Loaded files" not in s)
+        send("\x0c")
+        wait_for(lambda s: "Loaded files" in s)
+        tmux("send-keys", "-t", "poc:0.0", "End")
+        send("D")
+        wait_for(lambda s: "Loaded files" in s and "example.gpx" in s and "waypoints.gpx" not in s)
+        tmux("send-keys", "-t", "poc:0.0", "Home", "Enter")
+        wait_for(lambda s: "Loaded files" not in s and "Riverside exploration" in s and "Elevation profile" in s)
+        send("f")
+        settled()
+        tmux("resize-window", "-t", "poc:0", "-x", "70", "-y", "24")
+        send("\x0c")
+        wait_for(lambda s: "Loaded files" in s and "Optional spur" in s)
+        tmux("send-keys", "-t", "poc:0.0", "End", "Enter")
+        wait_for(lambda s: "Loaded files" not in s and "Optional spur" in s)
+        send("\x10")
+        wait_for(lambda s: "Commands" in s)
+        send("clear workspace")
+        tmux("send-keys", "-t", "poc:0.0", "Enter")
+        wait_for(lambda s: "Free roam" in s and "Commands" not in s)
+        send("\x0c")
+        wait_for(lambda s: "No files loaded" in s)
+        tmux("send-keys", "-t", "poc:0.0", "Escape")
+        wait_for(lambda s: "Loaded files" not in s)
+        send("q")
+        wait_for(lambda s: "TERMINAL_RESTORED=TrueEXIT=0" in re.sub(r"\s+", "", s))
+        print(f"{binary.name}: multi-file startup, loaded filenames, visibility, file removal, item selection, compact dialog and clear workspace passed")
+    finally:
+        tmux("kill-session", "-t", "poc", check=False)
+
+
+def workspace_profiles(binary, width, height):
+    folder = ROOT / "reports/generated"
+    folder.mkdir(exist_ok=True, parents=True)
+    with tempfile.TemporaryDirectory(dir=folder) as temporary:
+        paths = []
+        for name, latitude, step, elevations in (("Short loop", 51.501, .004, (40, 100, 60)), ("Long ride", 51.508, .008, (25, 70, 40))):
+            points = "".join(f'<trkpt lat="{latitude}" lon="{-0.124 + i*step}"><ele>{elevation}</ele><time>2026-01-01T09:{i*10:02d}:00Z</time></trkpt>' for i, elevation in enumerate(elevations))
+            path = Path(temporary) / f"{name}.gpx"
+            path.write_text(f"<gpx><trk><name>{name}</name><trkseg>{points}</trkseg></trk></gpx>")
+            paths.append(str(path))
+        command = shlex.join(["env", "MAPBOX_ACCESS_TOKEN=", "TERM=xterm-256color", "COLORTERM=truecolor", "python3", str(ROOT / "scripts/terminal_runner.py"), str(binary), *paths])
+        tmux("new-session", "-d", "-s", "poc", "-x", str(width), "-y", str(height), command)
+        try:
+            initial = wait_for(lambda s: "Elevation profiles" in s and "Short loop" in s and "Long ride" in s and "Loading track file" not in s)
+            start_distance = float(re.search(r"@ ([\d.]+) km", initial).group(1))
+            total_distance = float(re.search(r"([\d.]+) km total", initial).group(1))
+            assert 0 < start_distance < total_distance and abs(start_distance / total_distance - 1/3) < .01, "second activity did not start after the first on the summed distance axis"
+            legend = next(line for line in initial.splitlines() if "1:1 Short loop" in line and "2:1 Long ride" in line)
+            assert legend.index("Short loop") < legend.index("Long ride"), "legend changed load order to put the selected activity first"
+            send("f")
+            settled()
+            save_svg(folder / f"{binary.name}-two-profiles-{width}x{height}.svg", width, height)
+            send("ssss ")
+            wait_for(lambda s: "2:1 Long ride | Playing 120x" in s and any(float(value) > start_distance + .01 for value in re.findall(r"@ ([\d.]+) km", s)))
+            send(" ")
+            wait_for(lambda s: "Paused 120x" in s)
+            paused = settled()
+            time.sleep(.12)
+            assert capture() == paused, "paused multi-activity playback kept moving"
+            save_svg(folder / f"{binary.name}-two-profiles-paused-{width}x{height}.svg", width, height)
+            send(" ")
+            wait_for(lambda s: "Playing 120x" in s)
+            send("\x0c")
+            wait_for(lambda s: "Loaded files" in s)
+            tmux("send-keys", "-t", "poc:0.0", "Home", "Enter")
+            wait_for(lambda s: "Loaded files" not in s and "1:1 Short loop | Paused 1x" in s and "Elevation profiles" in s and "@ 0.00 km" in s)
+            send(" ")
+            wait_for(lambda s: "Playing 1x" in s)
+            send("\x0c")
+            wait_for(lambda s: "Loaded files" in s)
+            send(" ")
+            tmux("send-keys", "-t", "poc:0.0", "Escape")
+            wait_for(lambda s: "Loaded files" not in s and "Free roam" in s and "Playing" not in s and "Elevation profile | 25.0–70.0 m" in s)
+            send("e")
+            wait_for(lambda s: "Elevation profile" not in s)
+            send("e")
+            wait_for(lambda s: "Elevation profile | 25.0–70.0 m" in s)
+            send("q")
+            wait_for(lambda s: "TERMINAL_RESTORED=TrueEXIT=0" in re.sub(r"\s+", "", s))
+            print(f"{binary.name} {width}×{height}: ordered elevation, summed distance/cursor offsets, labelled selected playback, pause, activity switching, hiding a playing activity and remaining profile passed")
+        finally:
+            tmux("kill-session", "-t", "poc", check=False)
 
 
 if __name__ == "__main__":
@@ -464,5 +609,10 @@ if __name__ == "__main__":
             else:
                 dense_profile(ROOT / "bin" / name)
                 dialogs(ROOT / "bin" / name)
+                for width, height in ((120, 40), (70, 24)):
+                    theme_switching(ROOT / "bin" / name, width, height)
+                workspace_controls(ROOT / "bin" / name)
+                for width, height in ((120, 40), (70, 24), (70, 18)):
+                    workspace_profiles(ROOT / "bin" / name, width, height)
     finally:
         tmux("kill-server", check=False)

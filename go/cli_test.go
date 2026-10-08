@@ -47,12 +47,27 @@ func TestCLICameraValuesAndProviderDefaults(t *testing.T) {
 	if err != nil || command.Name != "open" || command.Path != "" || command.Args.Provider != "none" || command.Args.Zoom != nil {
 		t.Fatal("token-free invocation is not an empty canvas", command, err)
 	}
-	command, err = parseCLI([]string{"--center-lon", "-0.1", "fixtures/example.gpx", "--center-lat=51.5", "--bearing", "-45", "--ascii", "--no-animation", "--zoom", "12", "--zoom=13", "--point-index", "0"}, io.Discard)
+	command, err = parseCLI([]string{
+		"--center-lon", "-0.1",
+		"fixtures/example.gpx", "--center-lat=51.5",
+		"--bearing", "-45",
+		"--ascii", "--no-animation",
+		"--theme", "tokyo-night",
+		"--zoom", "12", "--zoom=13",
+		"--point-index", "0",
+	}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a := command.Args
-	if command.Path != "fixtures/example.gpx" || a.Provider != "none" || a.Lon == nil || *a.Lon != -0.1 || a.Lat == nil || *a.Lat != 51.5 || a.Bearing == nil || *a.Bearing != -45 || a.Zoom == nil || *a.Zoom != 13 || !a.ASCII || !a.NoAnimation || a.PointIndex == nil || *a.PointIndex != 0 {
+	fileOrProviderChanged := command.Path != "fixtures/example.gpx" || a.Provider != "none"
+	cameraFlagsLost := a.Lon == nil || *a.Lon != -0.1 ||
+		a.Lat == nil || *a.Lat != 51.5 ||
+		a.Bearing == nil || *a.Bearing != -45 ||
+		a.Zoom == nil || *a.Zoom != 13
+	viewerFlagsLost := !a.ASCII || !a.NoAnimation || a.Theme != "tokyo-night"
+	pointSelectorLost := a.PointIndex == nil || *a.PointIndex != 0
+	if fileOrProviderChanged || cameraFlagsLost || viewerFlagsLost || pointSelectorLost {
 		t.Fatal("flags were mistaken for input files or explicit values were lost", command)
 	}
 	t.Setenv("MAPBOX_ACCESS_TOKEN", "synthetic-test-token")
@@ -103,9 +118,14 @@ func TestCLIRejectsIrrelevantFlagsAndInvalidInputCounts(t *testing.T) {
 		{"summary", "fixtures/example.gpx", "--demo"},
 		{"inspect", "fixtures/example.gpx", "--zoom", "3"},
 		{"render", "--no-animation"}, {"render", "--frames", "2"},
+		{"render", "--theme", "tokyo-night"}, {"mcp", "--theme", "catppuccin"},
 		{"bench", "fixtures/example.gpx", "--provider", "mapbox"},
 		{"mcp", "--demo"}, {"mcp", "fixtures/example.gpx"},
-		{"fixtures/example.gpx", "fixtures/waypoints.gpx"},
+		{"summary", "fixtures/example.gpx", "fixtures/waypoints.gpx"},
+		{"fixtures/example.gpx", "fixtures/waypoints.gpx", "--point-index", "0"},
+		{"render", "a.gpx", "b.gpx", "--item-id", "1"},
+		{"summary", "a.gpx", "--items", "--item-id", "1"},
+		{"inspect", "a.gpx", "--item-id", "0"},
 		{"--zoom"}, {"--zoom", "oops"},
 		{"--unknown"}, {"summary"}, {"inspect"}, {"bench"},
 	} {
@@ -126,7 +146,13 @@ func TestCLIHelpIsAvailableWithoutInputOrCredentials(t *testing.T) {
 			t.Fatal("help tried to execute the command", argv, err)
 		}
 		help := output.String()
-		if command.Name == "open" && (!strings.Contains(help, "shoe [FILE]") || !strings.Contains(help, "Commands:") || strings.Contains(help, "-frames") || strings.Contains(help, "-json") || strings.Contains(help, "-demo")) {
+		viewerHelpInvalid := command.Name == "open" &&
+			(!strings.Contains(help, "shoe [FILE...]") ||
+				!strings.Contains(help, "Commands:") ||
+				strings.Contains(help, "-frames") ||
+				strings.Contains(help, "-json") ||
+				strings.Contains(help, "-demo"))
+		if viewerHelpInvalid {
 			t.Fatal("viewer help did not describe the default action and its options")
 		}
 		if command.Name == "inspect" && (!strings.Contains(help, "-distance-m") || strings.Contains(help, "-zoom")) {
@@ -134,6 +160,24 @@ func TestCLIHelpIsAvailableWithoutInputOrCredentials(t *testing.T) {
 		}
 		if command.Name == "render" && (!strings.Contains(help, "-json") || !strings.Contains(help, "-width") || strings.Contains(help, "-no-animation")) {
 			t.Fatal("render help did not list static rendering options")
+		}
+	}
+}
+
+func TestCLIMultipleFilesAndItemSelectors(t *testing.T) {
+	t.Setenv("MAPBOX_ACCESS_TOKEN", "")
+	for _, mode := range []string{"open", "render"} {
+		cmd, err := parseCLI([]string{mode, "a.gpx", "--ascii", "b.tcx"}, io.Discard)
+		multipleFilesLost := err != nil || len(cmd.Paths) != 2 || cmd.Paths[1] != "b.tcx" || !cmd.Args.ASCII
+		if multipleFilesLost {
+			t.Fatal("multiple files were not retained", cmd, err)
+		}
+	}
+	for _, mode := range []string{"open", "render", "summary", "inspect"} {
+		cmd, err := parseCLI([]string{mode, "--item-id", "3", "a.gpx"}, io.Discard)
+		itemSelectorLost := err != nil || cmd.Args.ItemID == nil || *cmd.Args.ItemID != 3
+		if itemSelectorLost {
+			t.Fatal("item selection was not retained", cmd, err)
 		}
 	}
 }

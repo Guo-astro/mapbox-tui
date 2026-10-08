@@ -29,12 +29,13 @@ type Segment struct {
 	Start, End int
 }
 type Track struct {
-	Name      string
-	Points    []Point
-	Segments  []Segment
-	Waypoints []Point
-	Bounds    [4]float64
-	Distance  float64
+	Name       string
+	Points     []Point
+	Segments   []Segment
+	Waypoints  []Point
+	Bounds     [4]float64
+	Distance   float64
+	RouteCount int
 }
 
 func clean(s string) string {
@@ -58,8 +59,10 @@ func haversine(a, b Point) float64 {
 	return 12742000 * math.Asin(math.Sqrt(math.Min(1, h)))
 }
 
-func parseGPX(d *xml.Decoder) (*Track, error) {
-	t := &Track{Name: "Imported GPX"}
+func parseGPX(d *xml.Decoder) (*Document, error) {
+	document := &Document{Name: "Imported GPX"}
+	var documentNamed bool
+	var t *Track
 	stack := []string{"gpx"}
 	seg := -1
 	var p *Point
@@ -81,13 +84,30 @@ func parseGPX(d *xml.Decoder) (*Track, error) {
 			}
 			stack = append(stack, tag)
 			text = ""
+			if tag == "trk" || tag == "rte" {
+				if t != nil {
+					return nil, fmt.Errorf("nested GPX tracks or routes are not supported")
+				}
+				kind := "track"
+				if tag == "rte" {
+					kind = "route"
+				}
+				t = document.addItem(kind).Track
+			}
 			if tag == "trkseg" || tag == "rte" {
+				if t == nil {
+					return nil, fmt.Errorf("segment outside track or route")
+				}
 				seg = len(t.Segments)
 				kind := "track"
 				if tag == "rte" {
 					kind = "route"
 				}
-				t.Segments = append(t.Segments, Segment{kind, len(t.Points), len(t.Points)})
+				t.Segments = append(t.Segments, Segment{
+					Kind:  kind,
+					Start: len(t.Points),
+					End:   len(t.Points),
+				})
 			}
 			if tag == "trkpt" || tag == "rtept" || tag == "wpt" {
 				p = &Point{Segment: seg}
@@ -136,9 +156,11 @@ func parseGPX(d *xml.Decoder) (*Track, error) {
 			if tag == pointTag && p != nil {
 				if tag == "wpt" {
 					p.Segment = -1
-					t.Waypoints = append(t.Waypoints, *p)
+					waypoint := document.addItem("waypoint").Track
+					waypoint.Name = p.Name
+					waypoint.Waypoints = []Point{*p}
 				} else {
-					if seg < 0 {
+					if t == nil || seg < 0 {
 						return nil, fmt.Errorf("point outside segment")
 					}
 					s := &t.Segments[seg]
@@ -148,26 +170,35 @@ func parseGPX(d *xml.Decoder) (*Track, error) {
 				p = nil
 				pointTag = ""
 			}
-			if tag == "name" && (parent == "metadata" || parent == "trk") && val != "" {
+			if tag == "name" && val != "" {
+				if parent == "metadata" {
+					document.Name = clean(val)
+					documentNamed = true
+				} else if parent == "trk" && !documentNamed {
+					document.Name = clean(val)
+				}
+			}
+			if tag == "name" && (parent == "trk" || parent == "rte") && t != nil {
 				t.Name = clean(val)
 			}
 			if tag == "trkseg" || tag == "rte" {
 				seg = -1
 			}
+			if tag == "trk" || tag == "rte" {
+				t = nil
+			}
 			stack = stack[:len(stack)-1]
 			text = ""
 		}
 	}
-	return t, nil
+	return document, nil
 }
 func (t *Track) summary() map[string]any {
-	elev, times, routes, segments := 0, 0, 0, 0
+	var elev, times, segments int
 	var lo, hi *float64
 	var first, last *string
 	for _, s := range t.Segments {
-		if s.Kind == "route" {
-			routes++
-		} else {
+		if s.Kind != "route" {
 			segments++
 		}
 	}
@@ -195,7 +226,22 @@ func (t *Track) summary() map[string]any {
 	if waypoints == nil {
 		waypoints = []Point{}
 	}
-	return map[string]any{"name": t.Name, "bounds": t.Bounds, "distance_m": t.Distance, "point_count": len(t.Points), "segment_count": segments, "route_count": routes, "waypoint_count": len(t.Waypoints), "waypoints": waypoints, "elevation_point_count": elev, "time_point_count": times, "elevation_min_m": lo, "elevation_max_m": hi, "start_time": first, "end_time": last}
+	return map[string]any{
+		"name":                  t.Name,
+		"bounds":                t.Bounds,
+		"distance_m":            t.Distance,
+		"point_count":           len(t.Points),
+		"segment_count":         segments,
+		"route_count":           t.RouteCount,
+		"waypoint_count":        len(t.Waypoints),
+		"waypoints":             waypoints,
+		"elevation_point_count": elev,
+		"time_point_count":      times,
+		"elevation_min_m":       lo,
+		"elevation_max_m":       hi,
+		"start_time":            first,
+		"end_time":              last,
+	}
 }
 func (t *Track) inspect(index *int, distance *float64) (map[string]any, error) {
 	if (index == nil) == (distance == nil) {
@@ -225,6 +271,8 @@ type Camera struct {
 	Width, Height         int
 }
 
+const minZoom = -8.0
+
 func (c Camera) scale() float64 { return 256 * math.Exp2(c.Zoom) }
 func (c Camera) screen(p XY) XY {
 	dx, dy := (p.X-c.Center.X)*c.scale(), (p.Y-c.Center.Y)*c.scale()
@@ -238,7 +286,7 @@ func (c Camera) world(p XY) XY {
 }
 func (c *Camera) zoomAt(p XY, delta float64) {
 	before := c.world(p)
-	c.Zoom = math.Max(0, math.Min(20, c.Zoom+delta))
+	c.Zoom = math.Max(minZoom, math.Min(20, c.Zoom+delta))
 	after := c.world(p)
 	c.Center.X += before.X - after.X
 	c.Center.Y += before.Y - after.Y
@@ -259,9 +307,23 @@ func fit(t *Track, w, h int, aspect float64) Camera {
 	if t == nil {
 		return Camera{Center: project(0, 0), Aspect: aspect, Width: w, Height: h}
 	}
-	a, b := project(t.Bounds[0], t.Bounds[3]), project(t.Bounds[2], t.Bounds[1])
+	return fitBounds(
+		t.Bounds,
+		w,
+		h,
+		aspect,
+	)
+}
+func fitBounds(bounds [4]float64, w, h int, aspect float64) Camera {
+	a, b := project(bounds[0], bounds[3]), project(bounds[2], bounds[1])
 	scale := math.Min(float64(w)*1.6/math.Max(b.X-a.X, 1e-7), float64(h)*1.6*aspect/math.Max(b.Y-a.Y, 1e-7))
-	return Camera{XY{(a.X + b.X) / 2, (a.Y + b.Y) / 2}, math.Max(0, math.Min(20, math.Log2(scale/256))), 0, aspect, w, h}
+	return Camera{
+		Center: XY{(a.X + b.X) / 2, (a.Y + b.Y) / 2},
+		Zoom:   math.Max(minZoom, math.Min(20, math.Log2(scale/256))),
+		Aspect: aspect,
+		Width:  w,
+		Height: h,
+	}
 }
 func pointSegment(p, a, b XY) (float64, float64) {
 	dx, dy := b.X-a.X, b.Y-a.Y
@@ -272,8 +334,12 @@ func pointSegment(p, a, b XY) (float64, float64) {
 	return math.Hypot(p.X-a.X-u*dx, p.Y-a.Y-u*dy), u
 }
 func pick(t *Track, c Camera, p XY) int {
+	i, _ := pickDistance(t, c, p)
+	return i
+}
+func pickDistance(t *Track, c Camera, p XY) (int, float64) {
 	if t == nil {
-		return -1
+		return -1, 6
 	}
 	best := 6.0
 	idx := -1
@@ -297,5 +363,5 @@ func pick(t *Track, c Camera, p XY) int {
 			}
 		}
 	}
-	return idx
+	return idx, best
 }

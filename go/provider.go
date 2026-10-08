@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,6 +38,8 @@ type Provider struct {
 	clock  uint64
 	retry  time.Time
 	mu     sync.Mutex
+	batch  chan struct{}
+	now    func() time.Time
 }
 
 const mapboxTokenMissing = "Mapbox token missing; set MAPBOX_ACCESS_TOKEN or access_token in mapbox.local.json"
@@ -49,7 +52,19 @@ func defaultProvider(token string) string {
 }
 
 func newProvider(kind string) *Provider {
-	return &Provider{Kind: kind, client: &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}, token: accessToken(), cache: map[Tile]cacheEntry{}}
+	return &Provider{
+		Kind: kind,
+		client: &http.Client{
+			Timeout: 8 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		token: accessToken(),
+		cache: map[Tile]cacheEntry{},
+		batch: make(chan struct{}, 1),
+		now:   time.Now,
+	}
 }
 func accessToken() string {
 	if token, ok := os.LookupEnv("MAPBOX_ACCESS_TOKEN"); ok {
@@ -67,11 +82,21 @@ func accessToken() string {
 	}
 	return config.Token
 }
-func attribution(kind string) string {
+func providerCredits(kind string) []sourceCredit {
 	if kind == "mapbox" {
-		return "© Mapbox  © OpenStreetMap  Improve this map (v credits)"
+		return []sourceCredit{
+			{Text: "© Mapbox", URL: "https://www.mapbox.com/about/maps/"},
+			{Text: "© OpenStreetMap", URL: "https://www.openstreetmap.org/copyright"},
+			{Text: "Improve this map (v credits)", URL: "https://apps.mapbox.com/feedback/"},
+		}
 	}
-	return "No basemap"
+	return nil
+}
+func providerGuidance(p *Provider, hasImports bool) string {
+	if p.Kind == "none" && p.token == "" && !hasImports {
+		return mapboxTokenMissing
+	}
+	return ""
 }
 func visible(c Camera) []Tile {
 	z := int(math.Max(0, math.Min(14, math.Floor(c.Zoom))))
@@ -100,6 +125,16 @@ func visible(c Camera) []Tile {
 		return out
 	}
 }
+func (p *Provider) sameRequest(a, b Camera) bool {
+	if a == b {
+		return true
+	}
+	usesTiles := p.Kind == "mapbox" && p.token != ""
+	if !usesTiles {
+		return true
+	}
+	return slices.Equal(visible(a), visible(b))
+}
 func ttl(header string) time.Duration {
 	age := 0
 	for _, s := range strings.Split(header, ",") {
@@ -125,18 +160,18 @@ func decodeTile(data []byte, t Tile) ([]Feature, error) {
 			continue
 		}
 		for _, f := range l.Features {
-			layer := 0
+			role := roleNone
 			label := ""
 			switch l.Name {
 			case "water":
-				layer = 1
+				role = roleWater
 			case "road":
-				layer = 2
+				role = roleRoad
 				if cl, _ := f.Properties["class"].(string); cl == "motorway" || cl == "trunk" || cl == "primary" || cl == "secondary" {
-					layer = 3
+					role = roleMajorRoad
 				}
 			case "place_label":
-				layer = 4
+				role = rolePlace
 				label, _ = f.Properties["name_en"].(string)
 				if label == "" {
 					label, _ = f.Properties["name"].(string)
@@ -151,7 +186,9 @@ func decodeTile(data []byte, t Tile) ([]Feature, error) {
 				}
 				return p
 			}
-			add := func(parts [][]XY, polygon bool) { out = append(out, Feature{parts, layer, polygon, clean(label)}) }
+			add := func(parts [][]XY, polygon bool) {
+				out = append(out, Feature{Parts: parts, Role: role, Polygon: polygon, Label: clean(label)})
+			}
 			switch g := f.Geometry.(type) {
 			case orb.Point:
 				add([][]XY{convert(orb.LineString{g})}, false)
@@ -180,57 +217,86 @@ func decodeTile(data []byte, t Tile) ([]Feature, error) {
 	}
 	return out, nil
 }
-func (p *Provider) scene(ctx context.Context, t *Track, c Camera) ([]Feature, Stats, string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+func (p *Provider) load(ctx context.Context, c Camera) (sourceSnapshot, error) {
+	snapshot := sourceSnapshot{Credits: providerCredits(p.Kind), Stats: p.snapshotStats()}
+	if err := ctx.Err(); err != nil {
+		return snapshot, err
+	}
 	if p.Kind != "mapbox" {
-		if t == nil && p.token == "" {
-			return nil, p.stats, mapboxTokenMissing
-		}
-		return nil, p.stats, ""
+		return snapshot, nil
 	}
 	if p.token == "" {
-		return nil, p.stats, mapboxTokenMissing
+		snapshot.Status = mapboxTokenMissing
+		return snapshot, nil
 	}
-	out := []Feature{}
-	status := ""
+	select {
+	case p.batch <- struct{}{}:
+		defer func() { <-p.batch }()
+	case <-ctx.Done():
+		return snapshot, ctx.Err()
+	}
+	var retryAt time.Time
 	for _, tile := range visible(c) {
+		if err := ctx.Err(); err != nil {
+			return snapshot, err
+		}
+		now := p.now()
+		p.mu.Lock()
 		p.clock++
 		entry, ok := p.cache[tile]
-		if ok && time.Now().Before(entry.Expires) {
+		if ok && now.Before(entry.Expires) {
 			p.stats.Hits++
 			entry.Used = p.clock
 			p.cache[tile] = entry
-			out = append(out, entry.Features...)
+			p.mu.Unlock()
+			snapshot.Features = append(snapshot.Features, entry.Features...)
+			snapshot.RefreshAt = earlier(snapshot.RefreshAt, entry.Expires)
 			continue
 		}
-		if time.Now().Before(p.retry) {
-			if status == "" {
-				status = "Tile requests paused after provider failure"
+		delete(p.cache, tile)
+		if now.Before(p.retry) {
+			retryAt = p.retry
+			p.mu.Unlock()
+			if snapshot.Status == "" {
+				snapshot.Status = "Tile requests paused after provider failure"
 			}
 			continue
 		}
-		if ctx.Err() != nil {
-			break
-		}
-		u := fmt.Sprintf("https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/%d/%d/%d.mvt?access_token=%s", tile.Z, tile.X, tile.Y, url.QueryEscape(p.token))
-		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+		p.mu.Unlock()
+		u := fmt.Sprintf(
+			"https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/%d/%d/%d.mvt?access_token=%s",
+			tile.Z,
+			tile.X,
+			tile.Y,
+			url.QueryEscape(p.token),
+		)
+		req, err := http.NewRequestWithContext(
+			ctx,
+			"GET",
+			u,
+			nil,
+		)
 		if err != nil {
-			status = "Cannot create tile request"
+			snapshot.Status = "Cannot create tile request"
+			retryAt = p.fail(10 * time.Second)
 			continue
 		}
+		p.mu.Lock()
 		p.stats.Requests++
+		p.mu.Unlock()
 		res, err := p.client.Do(req)
 		if err != nil {
-			p.stats.Errors++
-			status = "Tile network request failed"
-			p.retry = time.Now().Add(10 * time.Second)
+			if ctx.Err() != nil {
+				return snapshot, ctx.Err()
+			}
+			snapshot.Status = "Tile network request failed"
+			retryAt = p.fail(10 * time.Second)
 			continue
 		}
+		received := p.now()
 		if res.StatusCode != 200 {
 			res.Body.Close()
-			p.stats.Errors++
-			status = fmt.Sprintf("Mapbox HTTP %d; basemap unavailable", res.StatusCode)
+			snapshot.Status = fmt.Sprintf("Mapbox HTTP %d; basemap unavailable", res.StatusCode)
 			delay := 10
 			if res.StatusCode == 429 {
 				delay = 60
@@ -238,42 +304,79 @@ func (p *Provider) scene(ctx context.Context, t *Track, c Camera) ([]Feature, St
 					delay = max(delay, v)
 				}
 			}
-			p.retry = time.Now().Add(time.Duration(delay) * time.Second)
+			retryAt = p.fail(time.Duration(delay) * time.Second)
 			continue
 		}
 		data, e := io.ReadAll(io.LimitReader(res.Body, 8*1024*1024+1))
 		res.Body.Close()
+		if ctx.Err() != nil {
+			return snapshot, ctx.Err()
+		}
 		if e != nil || len(data) > 8*1024*1024 {
-			p.stats.Errors++
-			status = "Tile body failed or exceeded 8 MiB"
+			snapshot.Status = "Tile body failed or exceeded 8 MiB"
+			retryAt = p.fail(10 * time.Second)
 			continue
 		}
 		fs, e := decodeTile(data, tile)
+		if ctx.Err() != nil {
+			return snapshot, ctx.Err()
+		}
 		if e != nil {
-			p.stats.Errors++
-			status = e.Error()
+			snapshot.Status = e.Error()
+			retryAt = p.fail(10 * time.Second)
 			continue
 		}
-		out = append(out, fs...)
+		snapshot.Features = append(snapshot.Features, fs...)
 		age := ttl(res.Header.Get("Cache-Control"))
 		if elapsed, e := strconv.Atoi(res.Header.Get("Age")); e == nil && elapsed > 0 {
 			age -= time.Duration(elapsed) * time.Second
 		}
-		if age > 0 {
-			if len(p.cache) >= 64 {
-				var oldest Tile
-				used := uint64(math.MaxUint64)
-				for key, v := range p.cache {
-					if v.Used < used {
-						used = v.Used
-						oldest = key
-					}
-				}
-				delete(p.cache, oldest)
-			}
-			p.cache[tile] = cacheEntry{fs, time.Now().Add(age), p.clock}
+		if age <= 0 {
+			snapshot.RefreshAt = earlier(snapshot.RefreshAt, received.Add(time.Minute))
+			continue
 		}
+		expires := received.Add(age)
+		snapshot.RefreshAt = earlier(snapshot.RefreshAt, expires)
+		if !p.now().Before(expires) {
+			continue
+		}
+		p.mu.Lock()
+		if len(p.cache) >= 64 {
+			var oldest Tile
+			used := uint64(math.MaxUint64)
+			for key, v := range p.cache {
+				if v.Used < used {
+					used = v.Used
+					oldest = key
+				}
+			}
+			delete(p.cache, oldest)
+		}
+		p.cache[tile] = cacheEntry{Features: fs, Expires: expires, Used: p.clock}
+		p.mu.Unlock()
 	}
+	if !retryAt.IsZero() {
+		snapshot.RefreshAt = retryAt
+		snapshot.Failed = true
+	}
+	if !snapshot.RefreshAt.IsZero() && snapshot.RefreshAt.Before(p.now().Add(time.Second)) {
+		snapshot.RefreshAt = p.now().Add(time.Second)
+	}
+	snapshot.Stats = p.snapshotStats()
+	return snapshot, ctx.Err()
+}
+
+func (p *Provider) snapshotStats() Stats {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.stats.Cached = len(p.cache)
-	return out, p.stats, status
+	return p.stats
+}
+
+func (p *Provider) fail(delay time.Duration) time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stats.Errors++
+	p.retry = p.now().Add(delay)
+	return p.retry
 }

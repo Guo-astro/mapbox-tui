@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -17,45 +18,43 @@ import (
 type loaded struct {
 	path     string
 	id       uint64
-	track    *Track
-	playback *playback
+	document *Document
 	err      error
 }
-type sceneMsg struct {
-	track    *Track
-	features []Feature
-	stats    Stats
-	status   string
-	camera   Camera
-}
 type pulse time.Time
+type viewerSettings struct {
+	ASCII, NoAnimation bool
+	Theme              int
+}
 type viewer struct {
 	path                      string
 	args                      Args
-	track                     *Track
+	settings                  viewerSettings
+	workspace                 Workspace
+	pendingPaths              []string
+	startupCameraPending      bool
+	initialised               bool
 	provider                  *Provider
+	sources                   sourceLoader
+	sourceProvider            *Provider
+	sourceKind                string
 	ctx                       context.Context
 	camera                    Camera
 	width, height             int
-	selected                  int
-	features                  []Feature
-	stats                     Stats
-	dirty, busy, loading      bool
-	status, content           string
-	changed                   time.Time
-	fetched                   Camera
+	dirty, loading            bool
+	content                   string
 	dragging, rotating, moved bool
 	lastX, lastY              int
 	inspected                 *XY
 	fatal                     error
 	wheel                     wheelZoom
-	playback                  *playback
-	lastTick, lastFetch       time.Time
+	lastTick                  time.Time
 	showProfile               bool
 	profileHeight             int
-	profile                   *elevationProfile
 	progress                  *progress.Model
 	ui                        uiState
+	styles                    uiStyles
+	themes                    []presentationTheme
 	cursor                    *tea.Cursor
 	loadID                    uint64
 	following                 bool
@@ -74,35 +73,103 @@ func (m *viewer) Init() tea.Cmd {
 }
 func (m *viewer) freeRoam() tea.Cmd {
 	m.loadID++
-	m.path, m.track, m.playback = "", nil, nil
-	m.args.PointIndex, m.args.Lon, m.args.Lat, m.args.Zoom, m.args.Bearing = nil, nil, nil, nil, nil
+	m.workspace.clearSelection()
+	m.pendingPaths = nil
+	m.startupCameraPending = false
+	m.initialised = true
 	m.camera = m.destination()
 	m.motion.Active = false
 	m.loading, m.following = false, false
-	m.selected = -1
-	m.profile, m.inspected = nil, nil
-	m.features = nil
+	m.inspected = nil
 	m.ui.details.GotoTop()
 	m.lastMotionTick = time.Now()
 	m.layout()
 	m.dirty = true
-	if m.busy {
+	return m.fetch()
+}
+func (m *viewer) clearWorkspace() tea.Cmd {
+	m.workspace.clear()
+	m.path = ""
+	return m.freeRoam()
+}
+func (m *viewer) activeTrack() *Track {
+	if m.workspace.selection == nil {
 		return nil
 	}
-	return m.fetch()
+	return m.workspace.selection.track
+}
+func (m *viewer) activePlayback() *playback {
+	if m.workspace.selection == nil {
+		return nil
+	}
+	return m.workspace.selection.playback
+}
+func (m *viewer) selectedPoint() int {
+	if t := m.activeTrack(); t != nil && len(t.Points) > 0 {
+		return m.activePlayback().nearest()
+	}
+	return -1
+}
+func (m *viewer) visibleProfile() *elevationProfile {
+	if m.profileHeight <= 0 {
+		return nil
+	}
+	return m.workspace.profile(max(1, m.width-2), m.profileHeight-2)
+}
+func (m *viewer) activeColor() string {
+	return m.theme().mapColor(roleActiveRoute, m.activeSwatch())
+}
+func (m *viewer) activeSwatch() activityColor {
+	if m.workspace.selection != nil {
+		if entry, _, err := m.workspace.lookup(m.workspace.selection.ref); err == nil {
+			return entry.colors[m.workspace.selection.ref.ItemID]
+		}
+	}
+	return 0
+}
+func (m *viewer) selectionChanged() {
+	m.motion.Active, m.following = false, false
+	m.inspected = nil
+	m.lastTick = time.Now()
+	m.ui.details.GotoTop()
+	m.layout()
+	m.dirty = true
+}
+func (m *viewer) applyStartupSelection(ref ItemRef) error {
+	if m.args.ItemID != nil {
+		ref.ItemID = *m.args.ItemID
+		if err := m.workspace.selectItem(ref); err != nil {
+			return err
+		}
+	}
+	if m.args.PointIndex == nil {
+		return nil
+	}
+	if m.args.ItemID != nil {
+		return m.workspace.seek(*m.args.PointIndex)
+	}
+	return m.workspace.selectDocumentPoint(ref.DocumentID, *m.args.PointIndex)
 }
 func (m *viewer) load(path string) tea.Cmd {
 	m.loadID++
 	id := m.loadID
 	m.loading = true
 	m.dirty = true
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return func() tea.Msg { return loaded{path: path, id: id, err: err} }
+	}
+	if entry := m.workspace.documentAtPath(absolute); entry != nil {
+		return func() tea.Msg { return loaded{path: path, id: id, document: entry.document} }
+	}
 	return tea.Batch(m.startSpinner(), func() tea.Msg {
-		t, e := loadTrack(path)
-		var p *playback
-		if e == nil {
-			p = newPlayback(t)
+		d, e := loadDocument(absolute)
+		return loaded{
+			path:     path,
+			id:       id,
+			document: d,
+			err:      e,
 		}
-		return loaded{path, id, t, p, e}
 	})
 }
 func mapSize(w, h int) (int, int) {
@@ -112,10 +179,33 @@ func mapSize(w, h int) (int, int) {
 	return max(1, w-2), max(1, h-9)
 }
 func (m *viewer) fetch() tea.Cmd {
-	m.busy = true
-	m.lastFetch = time.Now()
-	c, track := m.destination(), m.track
-	return tea.Batch(m.startSpinner(), func() tea.Msg { f, s, e := m.provider.scene(m.ctx, track, c); return sceneMsg{track, f, s, e, c} })
+	return m.fetchAt(time.Now())
+}
+func (m *viewer) configureSources() {
+	if m.sourceProvider != m.provider || m.sourceKind != m.provider.Kind {
+		m.sources.set("basemap", m.provider, m.provider.Kind == "mapbox")
+		m.sourceProvider, m.sourceKind = m.provider, m.provider.Kind
+		m.dirty = true
+	}
+}
+func (m *viewer) fetchAt(now time.Time) tea.Cmd {
+	m.configureSources()
+	p := m.activePlayback()
+	requests := m.sources.poll(
+		m.ctx,
+		m.destination(),
+		now,
+		p != nil && p.Playing,
+	)
+	if len(requests) == 0 {
+		return nil
+	}
+	m.dirty = true
+	commands := []tea.Cmd{m.startSpinner()}
+	for _, request := range requests {
+		commands = append(commands, func() tea.Msg { return request.run() })
+	}
+	return tea.Batch(commands...)
 }
 func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
@@ -127,91 +217,80 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ui.picker, _ = m.ui.picker.Update(msg)
 		}
 		m.dirty = true
-		m.changed = time.Now()
 	case loaded:
 		if v.id != m.loadID {
 			return m, nil
 		}
 		m.loading = false
 		if v.err != nil {
+			m.pendingPaths = nil
+			m.startupCameraPending = false
+			m.initialised = true
 			m.dirty = true
 			cmd := m.openDialog(dialogFiles)
 			m.ui.notice = "Could not open track file: " + v.err.Error()
 			return m, cmd
 		}
-		if m.track != nil {
-			m.args.PointIndex, m.args.Lon, m.args.Lat, m.args.Zoom, m.args.Bearing = nil, nil, nil, nil, nil
-		}
+		initial := !m.initialised
+		m.initialised = true
 		m.path = v.path
-		m.track = v.track
-		m.playback = v.playback
-		m.features = nil
-		m.motion.Active = false
-		m.following = false
-		m.profile = nil
-		m.inspected = nil
-		m.ui.details.GotoTop()
-		w, h := mapSize(m.width, m.height)
-		h -= profileRows(h, m.showProfile)
-		a := m.args
+		ref := m.workspace.addDocument(v.document)
+		if initial {
+			m.startupCameraPending = true
+			if err := m.applyStartupSelection(ref); err != nil {
+				m.fatal = err
+				return m, tea.Quit
+			}
+		}
+		m.selectionChanged()
+		a := Args{Aspect: m.args.Aspect}
+		if m.startupCameraPending && len(m.pendingPaths) == 0 {
+			a = m.args
+			m.startupCameraPending = false
+		}
+		w, h := m.camera.Width, m.camera.Height
 		vw, vh := max(10, min(300, w)), max(5, min(100, h))
 		a.Width = &vw
 		a.Height = &vh
-		c, e := viewport(m.track, a)
+		c, e := viewport(m.activeTrack(), a)
 		if e != nil {
 			m.fatal = e
 			return m, tea.Quit
 		}
 		m.camera = c
 		m.camera.Width, m.camera.Height = w, h
-		m.selected = -1
-		if len(m.track.Points) > 0 {
-			m.selected = 0
-		}
-		if m.args.PointIndex != nil {
-			m.selected = *m.args.PointIndex
-			if m.selected < 0 || m.selected >= len(m.track.Points) {
-				m.fatal = fmt.Errorf("point_index outside track")
-				return m, tea.Quit
-			}
-		}
-		m.playback.seek(m.selected)
 		m.lastTick = time.Now()
 		m.lastMotionTick = m.lastTick
 		m.layout()
 		m.dirty = true
-		if m.busy {
-			return m, nil
+		if len(m.pendingPaths) > 0 {
+			path := m.pendingPaths[0]
+			m.pendingPaths = m.pendingPaths[1:]
+			return m, m.load(path)
 		}
 		return m, m.fetch()
-	case sceneMsg:
-		m.busy = false
-		if v.track != m.track {
-			return m, m.fetch()
+	case sourceResult:
+		m.configureSources()
+		if m.sources.accept(v, m.destination(), time.Now()) {
+			m.dirty = true
 		}
-		m.features, m.stats, m.status = v.features, v.stats, v.status
-		m.fetched = v.camera
-		m.dirty = true
 	case pulse:
-		now := time.Now()
+		now := time.Time(v)
 		seconds := now.Sub(m.lastMotionTick).Seconds()
 		m.lastMotionTick = now
 		m.advancePlayback(now)
 		if m.motion.advance(&m.camera, seconds) {
 			m.dirty = true
 		}
-		if !m.busy && !m.loading {
+		command := m.fetchAt(now)
+		if !m.sources.busy() && !m.loading {
 			m.ui.spinning = false
 		}
 		if m.dirty {
 			m.rebuild()
 			m.dirty = false
 		}
-		ready := time.Since(m.changed) > 100*time.Millisecond || (m.playback != nil && m.playback.Playing && time.Since(m.lastFetch) > 250*time.Millisecond)
-		if !m.busy && !m.loading && m.provider.Kind == "mapbox" && m.destination() != m.fetched && ready {
-			return m, tea.Batch(tick(), m.fetch())
-		}
-		return m, tick()
+		return m, tea.Batch(tick(), command)
 	case spinner.TickMsg:
 		if m.ui.spinning {
 			var cmd tea.Cmd
@@ -221,8 +300,13 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyPressMsg:
 		key := v.String()
-		if key == "ctrl+c" || (key == "q" && m.ui.dialog != dialogCommands && m.ui.dialog != dialogFiles) {
+		enteringText := m.ui.dialog == dialogCommands || m.ui.dialog == dialogFiles
+		if key == "ctrl+c" || (key == "q" && !enteringText) {
 			return m, tea.Quit
+		}
+		if key == "ctrl+t" {
+			m.applyTheme((m.settings.Theme + 1) % len(m.themes))
+			return m, nil
 		}
 		if m.ui.dialog != dialogNone {
 			return m, m.updateDialog(msg)
@@ -234,12 +318,14 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.openDialog(dialogFiles)
 		case "ctrl+p":
 			return m, m.openDialog(dialogCommands)
+		case "ctrl+l":
+			return m, m.openDialog(dialogWorkspace)
 		case "?":
 			return m, m.openDialog(dialogHelp)
 		case "v":
 			return m, m.openDialog(dialogCredits)
 		case "p":
-			if m.playback != nil {
+			if m.activePlayback() != nil {
 				return m, m.openDialog(dialogSpeed)
 			}
 			return m, nil
@@ -266,14 +352,21 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if m.track == nil {
+		if key == "e" && len(m.workspace.profileItems()) > 0 {
+			m.showProfile = !m.showProfile
+			m.layout()
+			m.dirty = true
+			return m, nil
+		}
+		if m.activeTrack() == nil {
 			switch key {
-			case "[", "]", "pgup", "pgdown", "home", "end", "c", "e", "space", "s", "S":
+			case "[", "]", "pgup", "pgdown", "home", "end", "c", "space", "s", "S":
 				return m, nil
 			}
 		}
 		m.advancePlayback(time.Now())
 		seeking := false
+		selected := m.selectedPoint()
 		c := &m.camera
 		switch key {
 		case "left", "h":
@@ -292,7 +385,7 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			c.zoomAt(XY{float64(c.Width), float64(c.Height * 2)}, -zoomStep)
 		case "f", "r":
 			m.following = false
-			m.moveCamera(fit(m.track, c.Width, c.Height, c.Aspect))
+			m.moveCamera(m.workspace.fitVisible(c.Width, c.Height, c.Aspect))
 		case "n":
 			m.motion.Active = false
 			c.Bearing = 0
@@ -304,27 +397,27 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			c.Bearing += 10
 		case "[":
 			seeking = true
-			m.selected--
+			selected--
 			m.inspected = nil
 		case "]":
 			seeking = true
-			m.selected++
+			selected++
 			m.inspected = nil
 		case "pgdown":
 			seeking = true
-			m.selected += 100
+			selected += 100
 			m.inspected = nil
 		case "pgup":
 			seeking = true
-			m.selected -= 100
+			selected -= 100
 			m.inspected = nil
 		case "home":
 			seeking = true
-			m.selected = 0
+			selected = 0
 			m.inspected = nil
 		case "end":
 			seeking = true
-			m.selected = len(m.track.Points) - 1
+			selected = len(m.activeTrack().Points) - 1
 			m.inspected = nil
 		case "c":
 			if pos := m.position(); pos != nil {
@@ -333,44 +426,36 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.following = true
 				m.moveCamera(target)
 			}
-		case "e":
-			m.showProfile = !m.showProfile
-			m.layout()
 		case "space":
-			if m.playback != nil {
-				m.playback.toggle()
-				m.selected = m.playback.nearest()
+			if p := m.activePlayback(); p != nil {
+				p.toggle()
 				m.inspected = nil
 			}
 		case "s", "S":
-			if m.playback != nil {
+			if p := m.activePlayback(); p != nil {
 				direction := 1
 				if key == "S" {
 					direction = -1
 				}
-				m.playback.cycle(direction)
+				p.cycle(direction)
 			}
 		case "a":
-			m.args.ASCII = !m.args.ASCII
+			m.settings.ASCII = !m.settings.ASCII
 		case "m":
-			m.args.NoAnimation = !m.args.NoAnimation
-			if m.args.NoAnimation {
+			m.settings.NoAnimation = !m.settings.NoAnimation
+			if m.settings.NoAnimation {
 				m.camera = m.destination()
 				m.motion.Active = false
 			}
 		default:
 			return m, nil
 		}
-		if m.track != nil && len(m.track.Points) > 0 {
-			m.selected = max(0, min(len(m.track.Points)-1, m.selected))
-		} else {
-			m.selected = -1
-		}
-		if seeking && m.playback != nil {
-			m.playback.seek(m.selected)
+		track := m.activeTrack()
+		canSeek := seeking && track != nil
+		if canSeek && len(track.Points) > 0 {
+			_ = m.workspace.seek(max(0, min(len(track.Points)-1, selected)))
 		}
 		m.dirty = true
-		m.changed = time.Now()
 	case tea.MouseMsg:
 		if m.ui.dialog != dialogNone {
 			return m, m.updateDialog(msg)
@@ -378,8 +463,12 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		mouse := v.Mouse()
 		m.advancePlayback(time.Now())
 		x, y := mouse.X, mouse.Y
-		inside := x >= 1 && x < m.camera.Width+1 && y >= 2 && y < m.camera.Height+2
-		if !inside && !m.dragging && !m.rotating && m.width >= 90 && x >= m.camera.Width+4 {
+		insideMapX := x >= 1 && x < m.camera.Width+1
+		insideMapY := y >= 2 && y < m.camera.Height+2
+		inside := insideMapX && insideMapY
+		overDetails := m.width >= 90 && x >= m.camera.Width+4
+		mapGesture := m.dragging || m.rotating
+		if !inside && !mapGesture && overDetails {
 			var cmd tea.Cmd
 			m.ui.details, cmd = m.ui.details.Update(msg)
 			m.dirty = true
@@ -409,7 +498,6 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.lastX, m.lastY = x, y
 					m.dirty = true
-					m.changed = time.Now()
 				}
 			}
 		case tea.MouseReleaseMsg:
@@ -418,12 +506,15 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p := XY{float64((x-1)*2 + 1), float64((y-2)*4 + 2)}
 				world := unproject(m.camera.world(p))
 				m.inspected = &world
-				if i := pick(m.track, m.camera, p); i >= 0 {
-					m.selected = i
-					if m.playback != nil {
-						m.playback.seek(i)
+				if ref, i := m.workspace.pick(m.camera, p); ref != (ItemRef{}) {
+					_ = m.workspace.selectItem(ref)
+					m.selectionChanged()
+					if i >= 0 {
+						_ = m.workspace.seek(i)
+						m.inspected = nil
+					} else {
+						m.inspected = &world
 					}
-					m.inspected = nil
 				}
 				m.dirty = true
 			}
@@ -434,7 +525,12 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if mouse.Button == tea.MouseWheelUp {
 					direction = 1
 				}
-				m.zoomWheel(XY{float64((x-1)*2 + 1), float64((y-2)*4 + 2)}, direction, mouse.Mod, time.Now())
+				m.zoomWheel(
+					XY{float64((x-1)*2 + 1), float64((y-2)*4 + 2)},
+					direction,
+					mouse.Mod,
+					time.Now(),
+				)
 			}
 		}
 	default:
@@ -447,41 +543,31 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *viewer) layout() {
 	w, h := mapSize(m.width, m.height)
-	m.profileHeight = profileRows(h, m.showProfile && m.track != nil)
+	if len(m.workspace.items()) > 1 {
+		h--
+	}
+	m.profileHeight = profileRows(h, m.showProfile && len(m.workspace.profileItems()) > 0)
 	m.camera.Width, m.camera.Height = w, h-m.profileHeight
 	m.motion.Target.Width, m.motion.Target.Height = m.camera.Width, m.camera.Height
 	if m.width < 90 {
 		m.ui.detailsFocused = false
 	}
-	if m.profileHeight > 0 && m.track != nil {
-		width, height := max(1, m.width-2), m.profileHeight-2
-		if m.profile == nil || m.profile.Grid.Width != width || m.profile.Grid.Height != height {
-			m.profile = newProfile(m.track, width, height)
-		}
-	}
 }
 func (m *viewer) pausePlayback() {
-	if m.playback != nil {
-		m.playback.Playing = false
+	if p := m.activePlayback(); p != nil {
+		p.Playing = false
 		m.dirty = true
 	}
 }
 func (m *viewer) position() *ridePosition {
-	if m.track == nil || m.selected < 0 || m.selected >= len(m.track.Points) {
-		return nil
-	}
-	if m.playback != nil {
-		return m.playback.position(m.track)
-	}
-	p := m.track.Points[m.selected]
-	return &ridePosition{Index: m.selected, World: p.World, Distance: p.Distance, Elevation: p.Elevation, Time: p.Time}
+	return m.workspace.position()
 }
 func (m *viewer) advancePlayback(now time.Time) {
-	if m.playback == nil || m.track == nil {
+	p, t := m.activePlayback(), m.activeTrack()
+	if p == nil || t == nil {
 		return
 	}
-	if !m.lastTick.IsZero() && m.playback.advance(m.track, now.Sub(m.lastTick).Seconds()) {
-		m.selected = m.playback.nearest()
+	if !m.lastTick.IsZero() && p.advance(t, now.Sub(m.lastTick).Seconds()) {
 		m.inspected = nil
 		m.dirty = true
 		if pos := m.position(); pos != nil && m.following {
@@ -494,16 +580,20 @@ func (m *viewer) advancePlayback(now time.Time) {
 	m.lastTick = now
 }
 
-func gridRow(g Grid, y int, ascii bool) string {
+func (m *viewer) gridRow(g Grid, y int, ascii bool) string {
 	var line strings.Builder
 	for x := 0; x < g.Width; {
-		layer := g.Cells[y*g.Width+x].Layer
+		cell := g.Cells[y*g.Width+x]
 		var run strings.Builder
-		for x < g.Width && g.Cells[y*g.Width+x].Layer == layer {
-			run.WriteRune(g.glyph(g.Cells[y*g.Width+x], ascii))
+		for x < g.Width {
+			next := g.Cells[y*g.Width+x]
+			if next.Role != cell.Role || next.Color != cell.Color {
+				break
+			}
+			run.WriteRune(g.glyph(next, ascii))
 			x++
 		}
-		line.WriteString(paint(run.String(), layer))
+		line.WriteString(m.paint(run.String(), cell.Role, cell.Color))
 	}
 	return line.String()
 }
@@ -519,31 +609,77 @@ func (m *viewer) zoomWheel(p XY, direction int, mod tea.KeyMod, now time.Time) {
 	m.motion.Active = false
 	m.camera.zoomAt(p, delta)
 	m.dirty = true
-	m.changed = now
 }
 
-var palette = []string{"#8D9DAA", "#548EAB", "#536575", "#303F4C", "#A7BCCB", "#FFC66D", "#FFC66D", "#F2F6FA"}
-
-func paint(s string, layer int) string {
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(palette[min(layer, 7)])).Render(s)
+func (m *viewer) paint(s string, role mapRole, colors ...activityColor) string {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color(m.theme().mapColor(role, colors...))).
+		Bold(role == roleCursor).
+		Render(s)
 }
 func pad(s string, w int) string {
 	s = ansi.Truncate(s, max(0, w), "")
 	return s + strings.Repeat(" ", max(0, w-ansi.StringWidth(s)))
 }
 func (m *viewer) details() []string {
-	t := m.track
+	t := m.activeTrack()
+	stats := m.sources.view().Stats
 	if t == nil {
 		center := unproject(m.camera.Center)
-		lines := []string{"Map details", "", "Free roam", "No route loaded", "ctrl+o to open a track file", "", "Map center", fmt.Sprintf("Lat %.6f", center.Y), fmt.Sprintf("Lon %.6f", center.X)}
-		if m.inspected != nil {
-			lines = append(lines, "", "Selected position", fmt.Sprintf("Lat %.6f", m.inspected.Y), fmt.Sprintf("Lon %.6f", m.inspected.X))
+		lines := []string{
+			"Map details",
+			"",
+			"Free roam",
+			"No route loaded",
+			"ctrl+o to open a track file",
+			"",
+			"Map center",
+			fmt.Sprintf("Lat %.6f", center.Y),
+			fmt.Sprintf("Lon %.6f", center.X),
 		}
-		return append(lines, "", fmt.Sprintf("Zoom %.2f", m.camera.Zoom), fmt.Sprintf("Bearing %.0f°", math.Mod(m.camera.Bearing+360, 360)), "", "Tiles · req / hit / err", fmt.Sprintf("%d / %d / %d", m.stats.Requests, m.stats.Hits, m.stats.Errors))
+		if len(m.workspace.documents) > 0 {
+			lines[3], lines[4] = "No active item", "ctrl+l for loaded files"
+		}
+		if m.inspected != nil {
+			lines = append(
+				lines,
+				"",
+				"Selected position",
+				fmt.Sprintf("Lat %.6f", m.inspected.Y),
+				fmt.Sprintf("Lon %.6f", m.inspected.X),
+			)
+		}
+		return append(
+			lines,
+			"",
+			fmt.Sprintf("Zoom %.2f", m.camera.Zoom),
+			fmt.Sprintf("Bearing %.0f°", math.Mod(m.camera.Bearing+360, 360)),
+			"",
+			"Tiles · req / hit / err",
+			fmt.Sprintf(
+				"%d / %d / %d",
+				stats.Requests,
+				stats.Hits,
+				stats.Errors,
+			),
+		)
 	}
-	lines := []string{"Route details", "", fmt.Sprintf("%.2f km", t.Distance/1000), fmt.Sprintf("%d points / %d parts", len(t.Points), len(t.Segments)), fmt.Sprintf("%d waypoints", len(t.Waypoints)), "", "Selected position"}
+	lines := []string{
+		"Route details",
+		"",
+		fmt.Sprintf("%.2f km", t.Distance/1000),
+		fmt.Sprintf("%d points / %d parts", len(t.Points), len(t.Segments)),
+		fmt.Sprintf("%d waypoints", len(t.Waypoints)),
+		"",
+		"Selected position",
+	}
 	if m.inspected != nil {
-		lines = append(lines, fmt.Sprintf("Lat %.6f", m.inspected.Y), fmt.Sprintf("Lon %.6f", m.inspected.X), "Off-track location")
+		lines = append(
+			lines,
+			fmt.Sprintf("Lat %.6f", m.inspected.Y),
+			fmt.Sprintf("Lon %.6f", m.inspected.X),
+			"Off-track location",
+		)
 	} else if pos := m.position(); pos != nil {
 		p := t.Points[pos.Index]
 		ele, stamp := "unavailable", "unavailable"
@@ -556,7 +692,12 @@ func (m *viewer) details() []string {
 		label := fmt.Sprintf("Point %d / %d", pos.Index+1, len(t.Points))
 		lon, lat := p.Lon, p.Lat
 		if pos.Blend > 0 {
-			label = fmt.Sprintf("Between %d–%d / %d", pos.Index+1, pos.Index+2, len(t.Points))
+			label = fmt.Sprintf(
+				"Between %d–%d / %d",
+				pos.Index+1,
+				pos.Index+2,
+				len(t.Points),
+			)
 			geo := unproject(pos.World)
 			lon, lat = geo.X, geo.Y
 			if pos.Elevation != nil {
@@ -566,15 +707,58 @@ func (m *viewer) details() []string {
 				stamp = "~" + stamp
 			}
 		}
-		lines = append(lines, label, fmt.Sprintf("Part %d (%s)", p.Segment+1, t.Segments[p.Segment].Kind), fmt.Sprintf("%.2f km along", pos.Distance/1000), fmt.Sprintf("Lat %.6f", lat), fmt.Sprintf("Lon %.6f", lon), "Elevation: "+ele, stamp)
+		lines = append(
+			lines,
+			label,
+			fmt.Sprintf("Part %d (%s)", p.Segment+1, t.Segments[p.Segment].Kind),
+			fmt.Sprintf("%.2f km along", pos.Distance/1000),
+			fmt.Sprintf("Lat %.6f", lat),
+			fmt.Sprintf("Lon %.6f", lon),
+			"Elevation: "+ele,
+			stamp,
+		)
 	} else {
 		lines = append(lines, "No track points")
+		if len(t.Waypoints) > 0 {
+			p := t.Waypoints[0]
+			lines = append(
+				lines,
+				p.Name,
+				fmt.Sprintf("Lat %.6f", p.Lat),
+				fmt.Sprintf("Lon %.6f", p.Lon),
+			)
+		}
 	}
 	mode := "Free camera · c to follow"
 	if m.following {
 		mode = "Following position"
 	}
-	lines = append(lines, "", fmt.Sprintf("Zoom %.2f", m.camera.Zoom), fmt.Sprintf("Bearing %.0f°", math.Mod(m.camera.Bearing+360, 360)), mode, "", "S start · E end", "W waypoint · @ position", "", "Tiles · req / hit / err", fmt.Sprintf("%d / %d / %d", m.stats.Requests, m.stats.Hits, m.stats.Errors))
+	lines = append(
+		lines,
+		"",
+		fmt.Sprintf("Zoom %.2f", m.camera.Zoom),
+		fmt.Sprintf("Bearing %.0f°", math.Mod(m.camera.Bearing+360, 360)),
+		mode,
+		"",
+		"S start · E end",
+		"W waypoint · @ position",
+		"",
+		"Tiles · req / hit / err",
+		fmt.Sprintf(
+			"%d / %d / %d",
+			stats.Requests,
+			stats.Hits,
+			stats.Errors,
+		),
+	)
+	if entry, _, err := m.workspace.lookup(m.workspace.selection.ref); err == nil {
+		lines = append(
+			lines,
+			"",
+			"File: "+clean(entry.document.Filename),
+			fmt.Sprintf("%d files loaded · ctrl+l", len(m.workspace.documents)),
+		)
+	}
 	return lines
 }
 func (m *viewer) rebuild() {
@@ -584,131 +768,219 @@ func (m *viewer) rebuild() {
 		return
 	}
 	c := m.camera
-	g := render(m.track, c, m.features, -1, m.args.ASCII)
+	var cursor *XY
 	pos := m.position()
 	if pos != nil {
-		g.label(c.screen(pos.World), "@", 7, false)
+		cursor = &pos.World
 	}
+	sources := m.sources.view()
+	g := renderScene(
+		c,
+		sources.Features,
+		m.workspace.sceneItems(),
+		cursor,
+	)
 	details := m.details()
-	provider := uiAccent.Background(uiSelected).Padding(0, 1).Render(m.provider.Kind)
+	t, s := m.theme(), m.styles
+	provider := s.accent.Background(lipgloss.Color(t.Selected)).Padding(0, 1).Render(m.provider.Kind)
 	name := "Free roam"
-	if m.track != nil {
-		name = m.track.Name
+	if t := m.activeTrack(); t != nil {
+		name = t.Name
 	}
-	title := gradient("shoe", uiInk) + "  " + uiHeading.Render(name)
+	if len(m.workspace.documents) > 1 {
+		name += fmt.Sprintf(" · %d files", len(m.workspace.documents))
+	}
+	title := m.gradient("shoe", lipgloss.Color(t.Background)) + "  " +
+		s.heading.Foreground(lipgloss.Color(m.activeColor())).Render(name)
 	rows := []string{pad(title, m.width-lipgloss.Width(provider)-1) + " " + provider}
 	border := lipgloss.NormalBorder()
-	if m.args.ASCII {
+	if m.settings.ASCII {
 		border = lipgloss.ASCIIBorder()
 	}
 	mapRows := []string{}
 	for y := 0; y < c.Height; y++ {
-		mapRows = append(mapRows, gridRow(g, y, m.args.ASCII))
+		mapRows = append(mapRows, m.gridRow(g, y, m.settings.ASCII))
 	}
-	frame := lipgloss.NewStyle().Border(border).BorderForeground(lipgloss.Color("#43556B")).Render(strings.Join(mapRows, "\n"))
+	frame := lipgloss.NewStyle().
+		Border(border).
+		BorderForeground(lipgloss.Color(t.Border)).
+		Render(strings.Join(mapRows, "\n"))
 	if m.width >= 90 {
 		styled := []string{}
 		for i, line := range details {
-			style := uiText
+			style := s.text
 			if i == 0 || line == "Selected position" {
-				style = uiHeading.Foreground(uiViolet)
+				style = s.heading.Foreground(lipgloss.Color(t.Accent))
 			} else if i > 16 || strings.Contains(line, "unavailable") {
-				style = uiMuted
+				style = s.muted
 			}
 			styled = append(styled, style.Render(line))
 		}
 		m.ui.details.SetWidth(28)
 		m.ui.details.SetHeight(c.Height)
 		m.ui.details.SetContent(strings.Join(styled, "\n"))
-		focus := uiMuted.Render("tab focus · wheel scroll")
+		focus := s.muted.Render("tab focus · wheel scroll")
 		if m.ui.detailsFocused {
-			focus = uiAccent.Render("Details focused · tab map")
+			focus = s.accent.Render("Details focused · tab map")
 		}
 		panel := "\n" + m.ui.details.View() + "\n" + focus
 		frame = lipgloss.JoinHorizontal(lipgloss.Top, frame, "  "+strings.ReplaceAll(panel, "\n", "\n  "))
 	}
 	rows = append(rows, frame)
+	profile := m.visibleProfile()
+	if len(m.workspace.items()) > 1 {
+		rows = append(rows, m.workspaceLegend(m.width, profile))
+	}
 	if m.width < 90 {
-		if m.track != nil {
-			rows = append(rows, paint(pad(fmt.Sprintf("%.2f km | %d points | zoom %.2f | bearing %.0f", m.track.Distance/1000, len(m.track.Points), c.Zoom, c.Bearing), m.width), 5))
-			s := strings.Join(details[7:min(len(details), 14)], " | ")
-			rows = append(rows, uiText.Render(pad(s, m.width)), uiMuted.Render(pad("[ ] select; PgUp/PgDn ±100; c follow · enter inspect", m.width)))
+		if t := m.activeTrack(); t != nil {
+			summary := fmt.Sprintf(
+				"%.2f km | %d points | zoom %.2f | bearing %.0f",
+				t.Distance/1000,
+				len(t.Points),
+				c.Zoom,
+				c.Bearing,
+			)
+			rows = append(rows, m.paint(pad(summary, m.width), roleActiveRoute, m.activeSwatch()))
+			line := strings.Join(details[7:min(len(details), 14)], " | ")
+			rows = append(
+				rows,
+				s.text.Render(pad(line, m.width)),
+				s.muted.Render(pad("[ ] select; PgUp/PgDn ±100; c follow · enter inspect", m.width)),
+			)
 		} else {
 			center := unproject(c.Center)
 			location := fmt.Sprintf("Lat %.6f | Lon %.6f", center.Y, center.X)
 			if m.inspected != nil {
 				location = fmt.Sprintf("Selected: %.6f, %.6f", m.inspected.Y, m.inspected.X)
 			}
-			rows = append(rows, paint(pad(fmt.Sprintf("Free roam | zoom %.2f | bearing %.0f", c.Zoom, c.Bearing), m.width), 5), uiText.Render(pad(location, m.width)), uiMuted.Render(pad("ctrl+o open file · enter inspect · f reset world view", m.width)))
+			summary := fmt.Sprintf("Free roam | zoom %.2f | bearing %.0f", c.Zoom, c.Bearing)
+			rows = append(
+				rows,
+				m.paint(pad(summary, m.width), roleActiveRoute),
+				s.text.Render(pad(location, m.width)),
+				s.muted.Render(pad("ctrl+l loaded files · f fit visible", m.width)),
+			)
 		}
 	}
-	if m.profileHeight > 0 && m.profile != nil {
-		header, chart, axis := m.profile.frame(pos)
-		rows = append(rows, uiHeading.Foreground(uiViolet).Render(pad(header, m.width)))
+	if profile != nil {
+		header, chart, axis := profile.frame(pos)
+		rows = append(rows, s.heading.Foreground(lipgloss.Color(t.Accent)).Render(pad(header, m.width)))
 		for y := 0; y < chart.Height; y++ {
-			rows = append(rows, " "+gridRow(chart, y, m.args.ASCII)+" ")
+			rows = append(rows, " "+m.gridRow(chart, y, m.settings.ASCII)+" ")
 		}
-		rows = append(rows, paint(pad(" "+axis, m.width), 2))
+		rows = append(rows, m.paint(pad(" "+axis, m.width), roleRoad))
 	}
 	status := "Left-drag pan · wheel zoom · click inspect · right-drag rotate"
-	if m.playback != nil {
-		status = m.playback.status()
+	playback := m.activePlayback()
+	if playback != nil {
+		status = playback.status()
 	}
-	if m.status != "" {
-		status = m.status + " | " + status
+	sourceStatus := sources.status()
+	if sourceStatus == "" {
+		sourceStatus = providerGuidance(m.provider, len(m.workspace.documents) > 0 || m.loading)
 	}
-	if m.busy || m.loading {
-		label := "Loading basemap…"
+	if sourceStatus != "" {
+		status = sourceStatus + " | " + status
+	}
+	if m.sources.busy() || m.loading {
+		var pending []string
+		for _, source := range sources.Sources {
+			if source.Loading {
+				pending = append(pending, source.Name)
+			}
+		}
+		label := "Loading " + strings.Join(pending, ", ") + "…"
 		if m.loading {
 			label = "Loading track file…"
 		}
 		status = m.ui.spinner.View() + " " + label + " " + status
 	}
-	if m.playback != nil {
+	if playback != nil {
 		if m.progress == nil {
-			bar := progress.New(progress.WithColors(lipgloss.Color("#FFC66D")), progress.WithoutPercentage(), progress.WithFillCharacters('█', '░'))
-			bar.EmptyColor = lipgloss.Color("#536575")
+			bar := progress.New(progress.WithoutPercentage(), progress.WithFillCharacters('█', '░'))
 			m.progress = &bar
 		}
+		m.progress.FullColor = lipgloss.Color(m.activeColor())
+		m.progress.EmptyColor = lipgloss.Color(t.ProgressEmpty)
 		m.progress.SetWidth(max(6, min(14, m.width/6)))
 		m.progress.Full, m.progress.Empty = '█', '░'
-		if m.args.ASCII {
+		if m.settings.ASCII {
 			m.progress.Full, m.progress.Empty = '#', '-'
 		}
-		layer := 4
-		if m.playback.Playing {
-			layer = 5
+		if len(m.workspace.items()) > 1 {
+			ref := m.workspace.selection.ref
+			label := fmt.Sprintf(
+				"%d:%d %s",
+				ref.DocumentID,
+				ref.ItemID,
+				m.activeTrack().Name,
+			)
+			status = ansi.Truncate(label, min(24, m.width/4), "…") + " | " + status
 		}
-		status = m.progress.ViewAs(m.playback.ratio()) + "  " + paint(status, layer)
+		status = m.progress.ViewAs(playback.ratio()) + "  " + m.paint(status, roleActiveRoute, m.activeSwatch())
 	}
 	m.ui.help.SetWidth(m.width)
-	keys := shortcutMap{compact: m.width < 90, playing: m.playback != nil && m.playback.Playing, detailsFocused: m.ui.detailsFocused, freeRoam: m.track == nil}
-	rows = append(rows, pad(status, m.width), pad(m.ui.help.View(keys), m.width), uiMuted.Render(pad(attribution(m.provider.Kind), m.width)))
-	m.content = strings.Join(rows, "\n")
+	keys := shortcutMap{
+		compact:        m.width < 90,
+		playing:        playback != nil && playback.Playing,
+		detailsFocused: m.ui.detailsFocused,
+		freeRoam:       m.activeTrack() == nil,
+	}
+	credits, _ := sources.attribution()
+	rows = append(
+		rows,
+		pad(status, m.width),
+		pad(m.ui.help.View(keys), m.width),
+		s.muted.Render(pad(credits, m.width)),
+	)
+	m.content = s.text.Background(lipgloss.Color(t.Background)).Width(m.width).Render(strings.Join(rows, "\n"))
 	m.overlay()
 }
 func (m *viewer) View() tea.View {
 	v := tea.NewView(m.content)
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
-	v.BackgroundColor = lipgloss.Color("#182431")
+	v.BackgroundColor = lipgloss.Color(m.theme().Background)
 	v.Cursor = m.cursor
 	return v
 }
 func openViewer(path string, a Args) error {
+	var paths []string
+	if path != "" {
+		paths = []string{path}
+	}
+	return openViewerFiles(paths, a)
+}
+func openViewerFiles(paths []string, a Args) error {
 	c, e := viewport(nil, a)
 	if e != nil {
 		return e
 	}
-	if path == "" && a.PointIndex != nil {
+	needsTrack := a.PointIndex != nil || a.ItemID != nil
+	if len(paths) == 0 && needsTrack {
 		return fmt.Errorf("point_index requires a track file")
 	}
 	p := newProvider(a.Provider)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	m := &viewer{path: path, args: a, provider: p, ctx: ctx, camera: c, width: 120, height: 40, selected: -1, dirty: true, showProfile: true}
-	m.initUI()
+	m := &viewer{
+		args:        a,
+		provider:    p,
+		ctx:         ctx,
+		camera:      c,
+		width:       120,
+		height:      40,
+		dirty:       true,
+		showProfile: true,
+	}
+	if len(paths) > 0 {
+		m.path, m.pendingPaths = paths[0], paths[1:]
+	}
+	if err := m.initUI(); err != nil {
+		return err
+	}
 	m.layout()
+	defer m.sources.close()
 	_, e = tea.NewProgram(m).Run()
 	if e != nil {
 		return e
