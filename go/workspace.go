@@ -199,6 +199,9 @@ func (w *Workspace) removeItem(ref ItemRef) error {
 	if len(entry.document.Items) == 1 {
 		return w.removeDocument(entry.id)
 	}
+	if j := entry.document.Items[i].Journey; j != nil {
+		j.cancelRoute()
+	}
 	if w.selection != nil && w.selection.ref == ref {
 		w.clearSelection()
 	}
@@ -215,6 +218,11 @@ func (w *Workspace) removeItem(ref ItemRef) error {
 func (w *Workspace) removeDocument(id int) error {
 	for i, entry := range w.documents {
 		if entry.id == id {
+			for _, item := range entry.document.Items {
+				if item.Journey != nil {
+					item.Journey.cancelRoute()
+				}
+			}
 			if w.selection != nil && w.selection.ref.DocumentID == id {
 				w.clearSelection()
 			}
@@ -226,9 +234,18 @@ func (w *Workspace) removeDocument(id int) error {
 }
 
 func (w *Workspace) clear() {
+	w.cancelJourneyRoutes()
 	w.clearSelection()
 	w.documents = nil
 	w.elevation = nil
+}
+
+func (w *Workspace) cancelJourneyRoutes() {
+	for _, item := range w.items() {
+		if item.Item.Journey != nil {
+			item.Item.Journey.cancelRoute()
+		}
+	}
 }
 
 func (w *Workspace) position() *ridePosition {
@@ -338,11 +355,13 @@ func (w *Workspace) sceneItems() []sceneItem {
 				Planned: item.Item.Journey != nil,
 			}
 			if j := item.Item.Journey; j != nil {
-				if j.Stops[0].Location != nil {
-					scene.Start = &scene.Track.Points[0].World
+				if location := j.Stops[0].Location; location != nil {
+					start := project(location.Lon, location.Lat)
+					scene.Start = &start
 				}
-				if j.Stops[len(j.Stops)-1].Location != nil {
-					scene.End = &scene.Track.Points[len(scene.Track.Points)-1].World
+				if location := j.Stops[len(j.Stops)-1].Location; location != nil {
+					end := project(location.Lon, location.Lat)
+					scene.End = &end
 				}
 			}
 			items = append(items, scene)

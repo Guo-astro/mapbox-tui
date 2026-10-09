@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"unicode"
 )
+
+var coordinateNumberPrefix = regexp.MustCompile(`^[+-]?(([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]*)?|\.)?$`)
 
 type placeLocation struct {
 	Name, Source, Attribution string
@@ -19,10 +23,28 @@ type journeyStop struct {
 	Location *placeLocation
 }
 
+func journeyStopLabel(index, count int) string {
+	if index == 0 {
+		return "A Start"
+	}
+	if index == count-1 {
+		return "B Destination"
+	}
+	return fmt.Sprintf("%d Waypoint", index)
+}
+
 type Journey struct {
-	Stops   []journeyStop
-	nextID  int
-	history [][]journeyStop
+	Stops      []journeyStop
+	Mode       journeyMode
+	Route      *journeyRoute
+	Error      string
+	Busy       bool
+	modeChosen bool
+	nextID     int
+	history    []journeyIntent
+	revision   uint64
+	requestID  uint64
+	cancel     context.CancelFunc
 }
 
 func (w *Workspace) newJourney() ItemRef {
@@ -49,15 +71,26 @@ func (w *Workspace) editJourney(ref ItemRef, stops []journeyStop) error {
 	if err != nil {
 		return err
 	}
+	return w.editJourneyIntent(ref, journeyIntent{Stops: stops, Mode: j.Mode})
+}
+
+func (w *Workspace) editJourneyIntent(ref ItemRef, intent journeyIntent) error {
+	j, err := w.journey(ref)
+	if err != nil {
+		return err
+	}
+	stops := intent.Stops
 	track, err := journeyTrack(stops)
 	if err != nil {
 		return err
 	}
-	j.history = append(j.history, j.Stops)
+	j.history = append(j.history, journeyIntent{Stops: j.Stops, Mode: j.Mode})
 	if len(j.history) > 64 {
 		j.history = slices.Delete(j.history, 0, 1)
 	}
 	j.Stops = slices.Clone(stops)
+	j.Mode = intent.Mode
+	j.invalidateRoute()
 	w.replaceJourneyTrack(ref, track)
 	return nil
 }
@@ -88,6 +121,9 @@ func (w *Workspace) setJourneyLocation(ref ItemRef, id int, location placeLocati
 			location.Name = cleanPlaceText(location.Name)
 			location.Source = cleanPlaceText(location.Source)
 			location.Attribution = cleanPlaceText(location.Attribution)
+			if stop.Location != nil && *stop.Location == location {
+				return nil
+			}
 			stops[i].Location = &location
 			return w.editJourney(ref, stops)
 		}
@@ -156,12 +192,13 @@ func (w *Workspace) undoJourney(ref ItemRef) error {
 	if len(j.history) == 0 {
 		return fmt.Errorf("no journey edits to undo")
 	}
-	stops := j.history[len(j.history)-1]
-	track, err := journeyTrack(stops)
+	intent := j.history[len(j.history)-1]
+	track, err := journeyTrack(intent.Stops)
 	if err != nil {
 		return err
 	}
-	j.Stops = stops
+	j.Stops, j.Mode = intent.Stops, intent.Mode
+	j.invalidateRoute()
 	j.history = slices.Delete(j.history, len(j.history)-1, len(j.history))
 	w.replaceJourneyTrack(ref, track)
 	return nil
@@ -208,6 +245,17 @@ func coordinateLocation(input string) (placeLocation, bool, error) {
 	return placeLocation{
 		Name: fmt.Sprintf("%.6f, %.6f", lat, lon), Lon: lon, Lat: lat, Source: "coordinates",
 	}, true, nil
+}
+
+func coordinatePrefix(input string) bool {
+	if !strings.ContainsAny(input, ",.+-eE") {
+		return false
+	}
+	lat, lon, pair := strings.Cut(input, ",")
+	if !coordinateNumberPrefix.MatchString(strings.TrimSpace(lat)) {
+		return false
+	}
+	return !pair || coordinateNumberPrefix.MatchString(strings.TrimSpace(lon))
 }
 
 func validLocation(lon, lat float64) bool {
