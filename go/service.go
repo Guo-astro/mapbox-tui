@@ -30,14 +30,17 @@ type Args struct {
 	Aspect      *float64 `json:"cell_aspect"`
 	ASCII       bool     `json:"ascii"`
 	Provider    string   `json:"provider"`
+	ProviderSet bool     `json:"-"`
 	NoAnimation bool     `json:"-"`
 	Theme       string   `json:"-"`
 }
 
 type Service struct {
-	mu        sync.Mutex
-	workspace Workspace
-	providers map[string]*Provider
+	mu                sync.Mutex
+	workspace         Workspace
+	providers         map[string]*Provider
+	credentialChecked bool
+	credentialPending chan struct{}
 }
 
 type trackInfo struct {
@@ -114,20 +117,64 @@ func (s *Service) document(id string) (*workspaceDocument, error) {
 }
 
 func (s *Service) render(ctx context.Context, a Args) (any, error) {
+	kind := a.Provider
+	if kind != "" && kind != "mapbox" && kind != "none" {
+		return nil, fmt.Errorf("unknown provider")
+	}
 	s.mu.Lock()
 	r, err := s.mapRequest(a)
+	p := s.providers["mapbox"]
 	s.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	kind := a.Provider
+	if kind != "none" {
+		p, err = s.mapboxProvider(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if kind == "" {
-		kind = defaultProvider(s.providers["mapbox"].token)
+		kind = defaultProvider(p.token)
 	}
-	if kind != "mapbox" && kind != "none" {
-		return nil, fmt.Errorf("unknown provider")
+	if kind == "none" {
+		p = providerForCredential("none", renderingCredential{guidance: p.guidance})
+		p.quiet = a.Provider == "none"
 	}
-	return r.render(ctx, a.ASCII, s.providers[kind])
+	return r.render(ctx, a.ASCII, p)
+}
+
+func (s *Service) mapboxProvider(ctx context.Context) (*Provider, error) {
+	for {
+		s.mu.Lock()
+		p := s.providers["mapbox"]
+		if p.token != "" || s.credentialChecked {
+			s.mu.Unlock()
+			return p, nil
+		}
+		if pending := s.credentialPending; pending != nil {
+			s.mu.Unlock()
+			select {
+			case <-pending:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		s.credentialPending = make(chan struct{})
+		s.mu.Unlock()
+
+		credential := resolveCredential(ctx)
+		s.mu.Lock()
+		if ctx.Err() == nil {
+			p = providerForCredential("mapbox", credential)
+			s.providers["mapbox"], s.credentialChecked = p, true
+		}
+		close(s.credentialPending)
+		s.credentialPending = nil
+		s.mu.Unlock()
+		return p, ctx.Err()
+	}
 }
 
 func (s *Service) mapRequest(a Args) (mapRequest, error) {
