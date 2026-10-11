@@ -136,6 +136,16 @@ func (m *viewer) acceptCredentials(result credentialResult) tea.Cmd {
 		m.authCancel = nil
 	}
 	credential := result.credential
+	switch {
+	case credential.token == "":
+		m.setMapboxVerified(false)
+	case result.checked || result.afterLogin:
+		m.setMapboxVerified(result.access.State == "ready")
+	case credential.source == "login":
+		m.setMapboxVerified(true)
+	case credential.token != m.provider.token:
+		m.setMapboxVerified(false)
+	}
 	if credential.dependency.State != "" {
 		m.authCLI = credential.dependency
 	}
@@ -168,6 +178,10 @@ func (m *viewer) acceptCredentials(result credentialResult) tea.Cmd {
 		}
 	}
 	if result.checked {
+		if m.preferences.Traffic {
+			m.traffic = nil
+			m.configureTraffic()
+		}
 		switch {
 		case credential.token == "":
 			m.authMessage = "Check failed: " + credential.guidance
@@ -252,12 +266,25 @@ func (m *viewer) mapboxConnected() bool {
 	return m.provider != nil && m.provider.token != ""
 }
 
-func (m *viewer) mapboxActions() []viewerCommand {
-	telemetry := "CLI telemetry: off"
-	if m.preferences.MapboxCLITelemetry && !mapboxTelemetryOptOut() {
-		telemetry = "CLI telemetry: on"
+func (m *viewer) mapboxVerified() bool {
+	return m.mapboxConnected() && m.authVerified
+}
+
+func (m *viewer) setMapboxVerified(verified bool) {
+	m.authVerified = verified
+	if verified && m.ui.notice == trafficAuthGuidance {
+		m.ui.notice = ""
 	}
-	telemetryAction := viewerCommand{title: telemetry, action: "telemetry"}
+	m.dirty = true
+}
+
+func (m *viewer) mapboxActions() []viewerCommand {
+	telemetryDisabled := mapboxTelemetryOptOut()
+	telemetryAction := viewerCommand{
+		title: "CLI telemetry", action: "telemetry", toggle: true, disabled: telemetryDisabled,
+		checked: m.preferences.MapboxCLITelemetry && !telemetryDisabled,
+	}
+	creditsAction := viewerCommand{title: "Map credits", shortcut: "v", action: "credits"}
 	continueAction := viewerCommand{title: "Continue offline", action: "continue"}
 	if m.mapboxConnected() {
 		continueAction.title = "Continue viewing"
@@ -266,6 +293,7 @@ func (m *viewer) mapboxActions() []viewerCommand {
 		return []viewerCommand{
 			{title: "Installation help", action: "install"},
 			telemetryAction,
+			creditsAction,
 			continueAction,
 		}
 	}
@@ -275,10 +303,10 @@ func (m *viewer) mapboxActions() []viewerCommand {
 		if m.mapboxConnected() {
 			first = viewerCommand{title: "Check connection", action: "check"}
 		}
-		return []viewerCommand{first, {title: "Installation help", action: "install"}, telemetryAction,
+		return []viewerCommand{first, {title: "Installation help", action: "install"}, telemetryAction, creditsAction,
 			continueAction}
 	}
-	return []viewerCommand{{title: "Installation help", action: "install"}, first, telemetryAction,
+	return []viewerCommand{{title: "Installation help", action: "install"}, first, telemetryAction, creditsAction,
 		continueAction}
 }
 
@@ -286,13 +314,18 @@ func (m *viewer) updateMapboxDialog(key string) tea.Cmd {
 	actions := m.mapboxActions()
 	m.ui.selected = min(m.ui.selected, len(actions)-1)
 	switch key {
+	case "v":
+		return m.openMapboxCredits()
 	case "up", "k":
 		m.ui.selected = max(0, m.ui.selected-1)
 	case "down", "j":
 		m.ui.selected = min(len(actions)-1, m.ui.selected+1)
 	case "tab":
 		m.ui.selected = (m.ui.selected + 1) % len(actions)
-	case "enter":
+	case "space", "enter":
+		if key == "space" && !actions[m.ui.selected].toggle {
+			return nil
+		}
 		switch actions[m.ui.selected].action {
 		case "continue":
 			m.cancelAuth()
@@ -303,6 +336,8 @@ func (m *viewer) updateMapboxDialog(key string) tea.Cmd {
 			return m.checkMapboxSetup()
 		case "login":
 			return m.beginMapboxLogin()
+		case "credits":
+			return m.openMapboxCredits()
 		case "telemetry":
 			if mapboxTelemetryOptOut() {
 				m.authMessage = "Telemetry disabled by MAPBOX_CLI_NO_TELEMETRY"
@@ -322,6 +357,12 @@ func (m *viewer) updateMapboxDialog(key string) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+func (m *viewer) openMapboxCredits() tea.Cmd {
+	command := m.openDialog(dialogCredits)
+	m.ui.creditsParent = dialogMapbox
+	return command
 }
 
 func (m *viewer) mapboxDialogContent(width, height int) (string, string, string) {
@@ -353,11 +394,14 @@ func (m *viewer) mapboxDialogContent(width, height int) (string, string, string)
 	selected := min(m.ui.selected, len(actions)-1)
 	start := max(0, selected-count+1)
 	for i := start; i < min(len(actions), start+count); i++ {
-		text := "  " + actions[i].title
+		text := "  " + actions[i].label()
 		style := m.styles.dialogText
 		if i == selected {
 			style = m.styles.selected
-			text = "> " + actions[i].title
+			text = "> " + actions[i].label()
+		}
+		if actions[i].disabled {
+			style = style.Foreground(m.styles.dialogMuted.GetForeground())
 		}
 		rows = append(rows, style.Render(pad(ansi.Truncate(text, width, "…"), width)))
 	}
@@ -371,7 +415,7 @@ func (m *viewer) mapboxDialogContent(width, height int) (string, string, string)
 	if m.mapboxConnected() {
 		title = "Mapbox settings"
 	}
-	return title, strings.Join(rows, "\n"), "↑/↓ actions   enter select   esc close"
+	return title, strings.Join(rows, "\n"), "↑/↓ actions   space toggle   enter select   esc close"
 }
 
 func (m *viewer) mapboxHelpContent(width, height int) (string, string, string) {

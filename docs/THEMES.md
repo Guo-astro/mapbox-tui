@@ -7,8 +7,8 @@ source loading and geometry do not own presentation colours.
 ## Use and add a palette
 
 `--theme` accepts a built-in ID or a local TOML path. The default is `catppuccin`.
-Ctrl-T cycles the session's registry, even inside dialogs. Ctrl-P's **Choose colour
-theme** opens a picker; Enter applies a choice and Esc closes it.
+Ctrl-T cycles the session's registry, even inside dialogs. Ctrl-P's **Cycle Theme**
+applies the next palette directly.
 
 For a custom palette, copy any file in [`go/themes/`](../go/themes/), change `id`
 and `name`, then edit colours and pass the file to the viewer:
@@ -45,6 +45,12 @@ Every colour must be a quoted `#RRGGBB` value. `[map]` requires `none`, `water`,
 `road`, `major_road`, `place`, `route`, `marker`, `cursor`, `active_route` and
 `active_marker`. An item's activity slot overrides its route, marker and moving
 position colour. A profile's vertical cursor uses the `cursor` role.
+
+Traffic adds optional map colours `traffic_low`, `traffic_moderate`, `traffic_heavy`,
+`traffic_severe` and `traffic_closed`. Built-ins define them; older custom palettes
+receive defaults when these keys are absent. Invalid explicit traffic colours still
+fail validation. Traffic roles control colour, while severity priority and `1`–`4`/
+`X` glyphs stay in the shared renderer.
 
 Unknown fields/roles, missing or invalid colours, incorrect activity palette sizes,
 invalid metadata and duplicate IDs fail at startup with an error. Custom palettes

@@ -461,16 +461,16 @@ def theme_switching(binary, width, height):
         send("\x10")
         wait_for(lambda s: "Commands" in s)
         send("theme")
-        wait_for(lambda s: "Choose colour theme" in s)
+        wait_for(lambda s: "Cycle Theme" in s)
         tmux("send-keys", "-t", "poc:0.0", "Enter")
-        wait_for(lambda s: "Colour theme" in s and "Catppuccin (current)" in s)
-        for name, background, foreground in (("Tokyo Night", "#1a1b26", "#a9b1d6"), ("Catppuccin Latte", "#eff1f5", "#4c4f69"), ("Catppuccin", "#1e1e2e", "#cdd6f4")):
-            send("\x14")
-            wait_for(lambda s: f"{name} (current)" in s)
+        wait_for(lambda s: "Commands" not in s and capture(colors=True) != original_colors)
+        for i, (name, background, foreground) in enumerate((("Tokyo Night", "#1a1b26", "#a9b1d6"), ("Catppuccin Latte", "#eff1f5", "#4c4f69"), ("Catppuccin", "#1e1e2e", "#cdd6f4"))):
+            if i > 0:
+                colors = capture(colors=True)
+                send("\x14")
+                wait_for(lambda s: capture(colors=True) != colors)
             save_svg(ROOT / "reports/generated" / f"{binary.name}-theme-{name.lower().replace(' ', '-')}-{width}x{height}.svg", width, height, background, foreground)
-        tmux("send-keys", "-t", "poc:0.0", "Escape")
-        wait_for(lambda s: "Colour theme" not in s)
-        assert settled() == baseline, "theme picker changed geometry, selection or playback"
+        assert settled() == baseline, "theme cycling changed geometry, selection or playback"
         send("\x14")
         wait_for(lambda s: capture(colors=True) != original_colors)
         assert settled() == baseline, "palette change affected map text or layout"
@@ -479,7 +479,7 @@ def theme_switching(binary, width, height):
             wait_for(lambda s: label in s)
             if label == "Commands":
                 send("theme")
-                wait_for(lambda s: "Choose colour theme" in s)
+                wait_for(lambda s: "Cycle Theme" in s)
             before = settled()
             colors = capture(colors=True)
             send("\x14")
@@ -775,7 +775,7 @@ def auth_setup(binary):
                 else:
                     tmux("send-keys", "-t", "poc:0.0", "Down", "Enter")
                     wait_for(lambda s: "Mapbox setup" in s and "Check again" in s)
-                tmux("send-keys", "-t", "poc:0.0", "Down", "Down", "Down", "Enter")
+                tmux("send-keys", "-t", "poc:0.0", "Down", "Down", "Down", "Down", "Enter")
                 wait_for(lambda s: "Mapbox setup" not in s and "Mapbox not connected" in s)
                 send("q")
                 wait_for(lambda s: "TERMINAL_RESTORED=TrueEXIT=0" in re.sub(r"\s+", "", s))
@@ -785,8 +785,51 @@ def auth_setup(binary):
     print(f"{binary.name}: dependency-aware setup actions, installation help/recheck, palette login, stdout notice and terminal restoration passed")
 
 
+def traffic_menu(binary):
+    with tempfile.TemporaryDirectory() as folder:
+        folder = Path(folder)
+        for width, height in ((120, 40), (70, 18), (30, 12)):
+            command = shlex.join(["env", "MAPBOX_ACCESS_TOKEN=", f"SHOE_MAPBOX_CLI={folder / 'missing'}",
+                                  f"XDG_CONFIG_HOME={folder}", "TERM=xterm-256color", "COLORTERM=truecolor",
+                                  "python3", str(ROOT / "scripts/terminal_runner.py"), str(binary),
+                                  str(ROOT / "fixtures/example.gpx")])
+            tmux("new-session", "-d", "-s", "poc", "-x", str(width), "-y", str(height), command)
+            try:
+                wait_for(lambda s: "Point 1" in s and "No basemap" in s)
+                send("\x10traffic")
+                wait_for(lambda s: "Commands" in s and "Toggle traffic" in s)
+                if width >= 70:
+                    assert "[ ]" not in capture(), "traffic menu still used a checkbox prefix"
+                traffic_row = next(row for row in capture(colors=True).splitlines() if "Toggle traffic" in row)
+                assert "38;2;108;112;134" in traffic_row, "unverified traffic was not greyed out"
+                tmux("send-keys", "-t", "poc:0.0", "Down")
+                send(" ")
+                wait_for(lambda s: "Commands" in s and "Verify Mapbox" in s)
+                send("\r")
+                wait_for(lambda s: "Commands" in s and "Verify Mapbox" in s)
+                settings = folder / "shoe/settings.json"
+                assert not settings.exists(), "disabled traffic changed the saved preference"
+                send("\x1b")
+                wait_for(lambda s: "Commands" not in s and "Point 1" in s)
+                send("a")
+                wait_for(lambda s: not any(0x2800 <= ord(c) <= 0x28ff for c in s))
+                send("\x10traffic")
+                wait_for(lambda s: "Commands" in s and "Toggle traffic" in s)
+                send("\x1b")
+                screen = wait_for(lambda s: "Commands" not in s)
+                assert "Point 1" in screen, "traffic controls discarded the imported activity"
+                send("q")
+                wait_for(lambda s: "TERMINAL_RESTORED=TrueEXIT=0" in re.sub(r"\s+", "", s))
+            finally:
+                tmux("kill-session", "-t", "poc", check=False)
+    print(f"{binary.name}: main-menu traffic entry, greyed-out unverified access, disabled action, ASCII, compact layouts and preserved imports passed")
+
+
 if __name__ == "__main__":
+    settings = tempfile.TemporaryDirectory()
+    os.environ["XDG_CONFIG_HOME"] = settings.name
     try:
+        tmux("start-server", ";", "set-option", "-g", "exit-empty", "off")
         for name in ("shoe",):
             free_roam(ROOT / "bin" / name, live="--mapbox" in sys.argv)
             if "--mapbox" not in sys.argv:
@@ -801,6 +844,7 @@ if __name__ == "__main__":
                 live_playback(ROOT / "bin" / name)
             else:
                 auth_setup(ROOT / "bin" / name)
+                traffic_menu(ROOT / "bin" / name)
                 dense_profile(ROOT / "bin" / name)
                 dialogs(ROOT / "bin" / name)
                 for width, height in ((120, 40), (70, 24)):
@@ -811,3 +855,4 @@ if __name__ == "__main__":
                     journey_controls(ROOT / "bin" / name, width, height)
     finally:
         tmux("kill-server", check=False)
+        settings.cleanup()

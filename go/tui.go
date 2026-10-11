@@ -38,6 +38,8 @@ type viewer struct {
 	sources                   sourceLoader
 	sourceProvider            *Provider
 	sourceKind                string
+	traffic                   *Provider
+	trafficEnabled            bool
 	ctx                       context.Context
 	camera                    Camera
 	width, height             int
@@ -66,6 +68,7 @@ type viewer struct {
 	authID                    uint64
 	authCancel                context.CancelFunc
 	authBusy, authFirstRun    bool
+	authVerified              bool
 	authMessage               string
 	authCLI                   mapboxDependencyStatus
 	preferences               appSettings
@@ -202,6 +205,7 @@ func (m *viewer) configureSources() {
 		m.sourceProvider, m.sourceKind = m.provider, m.provider.Kind
 		m.dirty = true
 	}
+	m.configureTraffic()
 }
 func (m *viewer) fetchAt(now time.Time) tea.Cmd {
 	m.configureSources()
@@ -372,7 +376,18 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sourceResult:
 		m.configureSources()
 		if m.sources.accept(v, m.destination(), time.Now()) {
+			if v.name == "basemap" {
+				snapshot := v.snapshot
+				ready := v.err == nil && !snapshot.Failed && snapshot.Status == ""
+				switch {
+				case snapshot.AccessDenied:
+					m.setMapboxVerified(false)
+				case ready && snapshot.AccessVerified:
+					m.setMapboxVerified(true)
+				}
+			}
 			m.dirty = true
+			return m, m.fetch()
 		}
 	case pulse:
 		now := time.Time(v)
@@ -464,10 +479,7 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if key == "e" && len(m.workspace.profileItems()) > 0 {
-			m.showProfile = !m.showProfile
-			m.layout()
-			m.dirty = true
-			return m, nil
+			return m, m.toggleMenuOption("profile")
 		}
 		if m.activePlayback() == nil {
 			switch key {
@@ -538,10 +550,7 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.moveCamera(target)
 			}
 		case "space":
-			if p := m.activePlayback(); p != nil {
-				p.toggle()
-				m.inspected = nil
-			}
+			return m, m.toggleMenuOption("play")
 		case "s", "S":
 			if p := m.activePlayback(); p != nil {
 				direction := 1
@@ -551,13 +560,9 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.cycle(direction)
 			}
 		case "a":
-			m.settings.ASCII = !m.settings.ASCII
+			return m, m.toggleMenuOption("ascii")
 		case "m":
-			m.settings.NoAnimation = !m.settings.NoAnimation
-			if m.settings.NoAnimation {
-				m.camera = m.destination()
-				m.motion.Active = false
-			}
+			return m, m.toggleMenuOption("motion")
 		default:
 			return m, nil
 		}
@@ -1021,8 +1026,14 @@ func (m *viewer) rebuild() {
 		status = playback.status()
 	}
 	sourceStatus := sources.status()
-	if m.provider.token == "" {
+	if m.provider.token == "" && !m.preferences.Traffic {
 		sourceStatus = ""
+	}
+	if m.preferences.Traffic {
+		status = m.trafficLegend() + " | " + status
+		if !m.mapboxVerified() {
+			sourceStatus = "Traffic paused; verify Mapbox in account settings"
+		}
 	}
 	if sourceStatus != "" {
 		status = sourceStatus + " | " + status

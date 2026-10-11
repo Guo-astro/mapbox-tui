@@ -95,7 +95,8 @@ func TestThemeDecoderRejectsIncompleteAndInvalidPalettes(t *testing.T) {
 			"",
 			1,
 		),
-		"unknown map role": valid + "traffic = \"#123456\"\n",
+		"missing map section": valid[:strings.Index(valid, "[map]")],
+		"unknown map role":    valid + "traffic = \"#123456\"\n",
 		"invalid colour": strings.Replace(
 			valid,
 			"#1e1e2e",
@@ -268,7 +269,7 @@ func TestThemePickerAndPaintingAcrossLayoutsAndASCIIMode(t *testing.T) {
 					size[1],
 					ascii,
 				)
-				m.runCommand("theme")
+				m.openDialog(dialogThemes)
 				if m.ui.dialog != dialogThemes || m.ui.selected != m.settings.Theme {
 					t.Fatal("theme command did not open the current palette")
 				}
