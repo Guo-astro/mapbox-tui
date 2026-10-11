@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -205,6 +206,42 @@ func TestJourneyShowFailureOffersFeedbackInsteadOfStraightLines(t *testing.T) {
 	}
 }
 
+func TestJourneyRouteResultUpdatesNestedPlannerNotice(t *testing.T) {
+	for _, nestedMode := range []bool{false, true} {
+		for _, fail := range []bool{false, true} {
+			name := fmt.Sprintf("mode=%v/failure=%v", nestedMode, fail)
+			t.Run(name, func(t *testing.T) {
+				m, _ := routingTestViewer(t)
+				if fail {
+					m.directions.client.Transport = fakeTransport(func(*http.Request) (*http.Response, error) {
+						return locationResponse(`{"code":"NoRoute"}`), nil
+					})
+				}
+				_, route := m.Update(tea.KeyPressMsg{Code: 'f', Mod: tea.ModCtrl})
+				if route == nil || !strings.Contains(m.ui.notice, "Calculating") {
+					t.Fatal("Show did not start routing with feedback")
+				}
+				if nestedMode {
+					m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+				}
+				m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+				m.Update(route())
+				m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+				if nestedMode {
+					m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+				}
+				j, _ := m.workspace.journey(m.planner.ref)
+				if m.ui.dialog != dialogJourney || j.Busy || m.ui.notice != j.Error {
+					t.Fatal("restored planner displayed obsolete route feedback", m.ui.notice, j.Error)
+				}
+				if fail && m.ui.notice == "" {
+					t.Fatal("restored planner lost the route failure")
+				}
+			})
+		}
+	}
+}
+
 func TestJourneyFailedRecalculationUsesManualPreview(t *testing.T) {
 	m, requests := routingTestViewer(t)
 	m.Update(m.calculateJourneyRoute()())
@@ -360,6 +397,58 @@ func TestJourneyRoutingModeSelectionAndOfflineFallback(t *testing.T) {
 	m.Update(late)
 	if cmd != nil || j.Mode != journeyManual || j.Route != nil || m.activeTrack().Points[0].Lon != -.1 {
 		t.Fatal("manual fallback requested work or accepted a late routed result")
+	}
+}
+
+func TestJourneyNestedFeedbackReturnsThroughTravelModeAndMenu(t *testing.T) {
+	m := journeyViewer(t)
+	m.Update(tea.WindowSizeMsg{Width: 50, Height: 18})
+	m.openDialog(dialogCommands)
+	m.ui.search.SetValue("journey")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	row, camera := m.planner.row, m.camera
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.Update(tea.PasteMsg{Content: "51.6, -0.2"})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	j, _ := m.workspace.journey(m.planner.ref)
+	if m.ui.dialog != dialogJourney || m.planner.row != row || m.camera != camera || j.Stops[1].Location != nil {
+		t.Fatal("cancelled location changed the plan, selection or compact panel layout")
+	}
+	m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	notice := m.ui.notice
+	if notice == "" {
+		t.Fatal("offline travel mode did not show feedback")
+	}
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.ui.dialog != dialogJourneyRouting || m.ui.selected != 1 || m.ui.notice != notice {
+		t.Fatal("feedback skipped or reset its travel-mode parent")
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.ui.dialog != dialogJourneyRouting || m.ui.selected != len(journeyModes) {
+		t.Fatal("feedback menu entry did not retain its parent selection")
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.ui.dialog != dialogJourney || m.planner.row != row {
+		t.Fatal("travel mode did not return to the selected planner row")
+	}
+	m.Update(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.ui.dialog != dialogJourney {
+		t.Fatal("direct planner feedback acquired a travel-mode parent")
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.ui.dialog != dialogCommands || m.ui.search.Value() != "journey" || !m.ui.search.Focused() {
+		t.Fatal("planner did not restore the menu filter after editing a location")
+	}
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.ui.dialog != dialogNone {
+		t.Fatal("nested planner chain did not end at the map")
 	}
 }
 

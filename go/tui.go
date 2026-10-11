@@ -72,7 +72,7 @@ type viewer struct {
 	authMessage               string
 	authCLI                   mapboxDependencyStatus
 	preferences               appSettings
-	connectionEchoed          bool
+	connectionEcho            string
 }
 
 func tick() tea.Cmd {
@@ -269,8 +269,7 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.authCLI = mapboxDependencyStatus{State: "ready", Path: v.cli.path}
-		m.closeDialog()
-		command := &viewerMapboxLogin{ctx: m.ctx, cli: v.cli}
+		command := &viewerMapboxLogin{ctx: v.ctx, cli: v.cli}
 		return m, tea.Exec(command, func(err error) tea.Msg { return mapboxLoginDone{id: v.id, err: err} })
 	case mapboxLoginDone:
 		if v.id != m.authID {
@@ -279,8 +278,8 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.authBusy = false
 		m.lastTick, m.lastMotionTick = time.Time{}, time.Now()
 		if v.err != nil {
-			m.openDialog(dialogMapbox)
 			m.authMessage = v.err.Error()
+			m.dirty = true
 			return m, nil
 		}
 		return m, m.discoverCredentials(true, false)
@@ -297,13 +296,20 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.workspace.acceptJourneyRoute(v) {
 			return m, nil
 		}
-		if m.ui.dialog == dialogJourney && m.planner.ref == v.ref {
+		if m.planner.ref == v.ref {
 			j, _ := m.workspace.journey(v.ref)
-			m.ui.notice = j.Error
-			if revision := m.planner.showRevision; revision != nil && *revision == v.revision {
-				m.planner.showRevision = nil
-				if v.err == nil {
-					return m, m.showJourneyOnMap()
+			for i, frame := range m.ui.parents {
+				if frame.kind == dialogJourney {
+					m.ui.parents[i].notice = j.Error
+				}
+			}
+			if m.ui.dialog == dialogJourney {
+				m.ui.notice = j.Error
+				if revision := m.planner.showRevision; revision != nil && *revision == v.revision {
+					m.planner.showRevision = nil
+					if v.err == nil {
+						return m, m.showJourneyOnMap()
+					}
 				}
 			}
 		}
@@ -405,7 +411,8 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuild()
 			m.dirty = false
 		}
-		return m, tea.Batch(tick(), command, m.echoConnectionNotice())
+		m.captureConnectionNotice()
+		return m, tea.Batch(tick(), command)
 	case spinner.TickMsg:
 		if m.ui.spinning {
 			var cmd tea.Cmd
@@ -421,10 +428,6 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.workspace.cancelJourneyRoutes()
 			m.cancelAuth()
 			return m, tea.Quit
-		}
-		if key == "ctrl+t" {
-			m.applyTheme((m.settings.Theme + 1) % len(m.themes))
-			return m, nil
 		}
 		if m.ui.dialog == dialogJourney && key == "tab" {
 			m.planner.mapFocused = !m.planner.mapFocused
@@ -1155,6 +1158,9 @@ func openViewerFiles(paths []string, a Args) error {
 	defer m.workspace.cancelJourneyRoutes()
 	defer m.cancelAuth()
 	_, e = tea.NewProgram(m).Run()
+	if m.connectionEcho != "" {
+		fmt.Println(m.connectionEcho)
+	}
 	if e != nil {
 		return e
 	}
