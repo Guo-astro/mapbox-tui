@@ -48,7 +48,15 @@ func clean(s string) string {
 }
 func project(lon, lat float64) XY {
 	lat = math.Max(-85.05112878, math.Min(85.05112878, lat))
-	return XY{(lon + 180) / 360, (1 - math.Asinh(math.Tan(lat*math.Pi/180))/math.Pi) / 2}
+	x := (lon + 180) / 360
+	y := (1 - math.Asinh(math.Tan(lat*math.Pi/180))/math.Pi) / 2
+	// Keep valid boundary coordinates inside the raster's half-open world.
+	const inset = 1e-9
+	if lon >= -180 && lon <= 180 {
+		x = math.Max(inset, math.Min(1-inset, x))
+	}
+	y = math.Max(inset, math.Min(1-inset, y))
+	return XY{x, y}
 }
 func unproject(p XY) XY {
 	return XY{p.X*360 - 180, math.Atan(math.Sinh(math.Pi*(1-2*p.Y))) * 180 / math.Pi}
@@ -271,7 +279,10 @@ type Camera struct {
 	Width, Height         int
 }
 
-const minZoom = -8.0
+const (
+	minZoom          = -8.0
+	localViewRadiusM = 1609.344
+)
 
 func (c Camera) scale() float64 { return 256 * math.Exp2(c.Zoom) }
 func (c Camera) screen(p XY) XY {
@@ -325,6 +336,41 @@ func fitBounds(bounds [4]float64, w, h int, aspect float64) Camera {
 		Height: h,
 	}
 }
+
+func localView(location XY, viewport Camera) Camera {
+	viewport.Center = project(location.X, location.Y)
+	viewport.clampCenter()
+	point := viewport.Center
+	latitude := unproject(viewport.Center).Y * math.Pi / 180
+	worldRadius := localViewRadiusM / (2 * math.Pi * 6371000 * math.Cos(latitude))
+	span := math.Min(float64(viewport.Width), float64(viewport.Height)*viewport.Aspect)
+	scale := span * 0.8 / worldRadius
+	viewport.Zoom = math.Max(minZoom, math.Min(20, math.Log2(scale/256)))
+	viewport = containedView(viewport)
+	screen := viewport.screen(point)
+	outsideX := screen.X < 0 || screen.X >= float64(viewport.Width*2)
+	outsideY := screen.Y < 0 || screen.Y >= float64(viewport.Height*4)
+	if outsideX || outsideY {
+		viewport.Bearing = 0
+		viewport.Center = point
+		viewport = containedView(viewport)
+	}
+	return viewport
+}
+
+func containedView(viewport Camera) Camera {
+	a, b := visibleBounds(viewport)
+	span := math.Max(b.X-a.X, b.Y-a.Y)
+	if span > 1 {
+		viewport.Zoom = math.Min(20, viewport.Zoom+math.Log2(span))
+		a, b = visibleBounds(viewport)
+	}
+	half := XY{(b.X - a.X) / 2, (b.Y - a.Y) / 2}
+	viewport.Center.X = math.Max(half.X, math.Min(1-half.X, viewport.Center.X))
+	viewport.Center.Y = math.Max(half.Y, math.Min(1-half.Y, viewport.Center.Y))
+	return viewport
+}
+
 func pointSegment(p, a, b XY) (float64, float64) {
 	dx, dy := b.X-a.X, b.Y-a.Y
 	u := 0.0
