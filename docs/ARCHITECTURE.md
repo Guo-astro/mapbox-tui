@@ -75,7 +75,7 @@ The main rules:
   requests finish while tile coverage is unchanged, and retain usable data with
   stale status after a failed refresh. CLI/MCP renders take one-shot snapshots.
 
-See [provider policies](PROVIDERS.md) for cache and attribution details.
+See [Mapbox policies](MAPBOX.md) for cache and attribution details.
 
 ## Tradeoffs
 
@@ -141,13 +141,14 @@ radius comparison.
 
 ### Run benchmarks and retain results
 
-From the repository root, using Go 1.27.1 from `go.mod`:
+From the repository root, with Go meeting the minimum in `go.mod`:
 
 ```sh
-MAPBOX_ACCESS_TOKEN='' mise exec go@1.27.1 -- make bench
-MAPBOX_ACCESS_TOKEN='' mise exec go@1.27.1 -- go test ./go -run '^$' -bench BenchmarkWorkspaceScene -benchmem
+make bench
+go test ./go -run '^$' -bench BenchmarkWorkspaceScene -benchmem
 ```
 
+These benchmarks use synthetic geometry without Mapbox credentials.
 `make bench` builds with `go build -trimpath`, generates dense fixtures and runs
 [`scripts/benchmark.py`](../scripts/benchmark.py):
 
