@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image/color"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -64,8 +65,19 @@ type dialogFrame struct {
 	kind                        dialogKind
 	selected, searchPosition    int
 	menuNavigated, collapsed    bool
+	filesCollapsed              bool
+	searchCharLimit             int
+	searchPlaceholder           string
 	searchValue, notice, action string
 	page                        pager.Model
+	picker                      *filepicker.Model
+	journey                     *journeyDialogFrame
+}
+
+type journeyDialogFrame struct {
+	ref                         ItemRef
+	row, stopID                 int
+	addingWaypoint, pickingStop bool
 }
 
 type shortcutMap struct{ compact, playing, detailsOpen, freeRoam, profiles bool }
@@ -305,6 +317,12 @@ func (m *viewer) closeDialog() {
 	if m.ui.dialog == dialogWorkspace {
 		m.ui.filesSelected = m.ui.selected
 	}
+	setupOpen := m.ui.dialog == dialogMapbox || slices.ContainsFunc(m.ui.parents, func(frame dialogFrame) bool {
+		return frame.kind == dialogMapbox
+	})
+	if setupOpen {
+		m.cancelAuth()
+	}
 	m.restoreThemePreview()
 	m.cancelPlaceSearch()
 	m.planner.showRevision = nil
@@ -400,9 +418,30 @@ func (m *viewer) pushDialog(kind dialogKind) tea.Cmd {
 	parents := m.ui.parents
 	if m.ui.dialog != dialogNone && m.ui.dialog != kind {
 		frame := dialogFrame{
-			kind: m.ui.dialog, selected: m.ui.selected, menuNavigated: m.ui.menuNavigated,
-			searchValue: m.ui.search.Value(), searchPosition: m.ui.search.Position(),
-			notice: m.ui.notice, page: m.ui.page, collapsed: m.planner.collapsed,
+			kind:              m.ui.dialog,
+			selected:          m.ui.selected,
+			menuNavigated:     m.ui.menuNavigated,
+			searchValue:       m.ui.search.Value(),
+			searchPosition:    m.ui.search.Position(),
+			searchCharLimit:   m.ui.search.CharLimit,
+			searchPlaceholder: m.ui.search.Placeholder,
+			notice:            m.ui.notice,
+			page:              m.ui.page,
+			collapsed:         m.planner.collapsed,
+			filesCollapsed:    m.ui.filesCollapsed,
+		}
+		if m.journeyPanelOpen() {
+			frame.journey = &journeyDialogFrame{
+				ref:            m.planner.ref,
+				row:            m.planner.row,
+				stopID:         m.planner.stopID,
+				addingWaypoint: m.planner.addingWaypoint,
+				pickingStop:    m.planner.pickingStop,
+			}
+		}
+		if frame.kind == dialogFiles {
+			picker := m.ui.picker
+			frame.picker = &picker
 		}
 		if frame.kind == dialogMapbox {
 			actions := m.mapboxActions()
@@ -416,12 +455,12 @@ func (m *viewer) pushDialog(kind dialogKind) tea.Cmd {
 }
 
 func (m *viewer) backDialog() tea.Cmd {
-	if m.ui.dialog == dialogMapbox {
-		m.cancelAuth()
-	}
 	if len(m.ui.parents) == 0 {
 		m.closeDialog()
 		return nil
+	}
+	if m.ui.dialog == dialogMapbox {
+		m.cancelAuth()
 	}
 	last := len(m.ui.parents) - 1
 	frame := m.ui.parents[last]
@@ -432,17 +471,37 @@ func (m *viewer) backDialog() tea.Cmd {
 	m.ui.notice, m.ui.page = frame.notice, frame.page
 	m.ui.page.Style = m.styles.dialogText
 	m.planner.collapsed = frame.collapsed
-	if frame.kind == dialogCommands {
+	m.ui.filesCollapsed = frame.filesCollapsed
+	if frame.journey != nil {
+		m.cancelPlaceSearch()
+		m.planner.ref = frame.journey.ref
+		m.planner.row, m.planner.stopID = frame.journey.row, frame.journey.stopID
+		m.planner.addingWaypoint = frame.journey.addingWaypoint
+		m.planner.pickingStop = frame.journey.pickingStop
+	}
+	if frame.kind == dialogThemes {
+		m.applyTheme(frame.selected)
+	}
+	placeSearch := m.placeSearchOpen()
+	if frame.kind == dialogCommands || placeSearch {
+		m.ui.search.CharLimit = frame.searchCharLimit
+		m.ui.search.Placeholder = frame.searchPlaceholder
 		m.ui.search.SetValue(frame.searchValue)
 		m.ui.search.SetCursor(frame.searchPosition)
 	}
-	if frame.kind == dialogJourneyLocation {
+	if placeSearch {
 		m.ui.inputID = rand.Text()
-		m.ui.search.SetValue(frame.searchValue)
-		m.ui.search.SetCursor(frame.searchPosition)
-		if !m.planner.collapsed {
-			command = tea.Batch(command, m.ui.search.Focus())
+		m.ui.search.Blur()
+		if !m.planner.collapsed && !m.planner.pickingStop {
+			command = tea.Batch(command, m.ui.search.Focus(), m.schedulePlaceSearch())
 		}
+		m.ui.notice = frame.notice
+	}
+	if frame.picker != nil {
+		m.ui.picker = *frame.picker
+		m.ui.picker.SetHeight(max(1, min(17, m.height-10)-2))
+		m.stylePicker()
+		command = m.ui.picker.Init()
 	}
 	if frame.kind == dialogMapbox {
 		for i, action := range m.mapboxActions() {
@@ -741,7 +800,6 @@ func (m *viewer) dialogContent(width, height int) (string, string, string) {
 		start := max(0, m.ui.selected-count+1)
 		for i := start; i < min(len(commands), start+count); i++ {
 			command := commands[i]
-			line := pad(command.label(), max(1, width-len(command.shortcut)-3)) + "  " + command.shortcut
 			style := s.dialogText
 			if i == m.ui.selected {
 				style = s.selected
@@ -749,6 +807,12 @@ func (m *viewer) dialogContent(width, height int) (string, string, string) {
 			if command.disabled {
 				style = style.Foreground(lipgloss.Color(m.theme().Dimmed))
 			}
+			label := command.title
+			if command.checked {
+				tick := style.Foreground(lipgloss.Color(m.theme().Accent)).Render("✓")
+				label += " " + tick
+			}
+			line := pad(label, max(1, width-len(command.shortcut)-3)) + "  " + command.shortcut
 			rows = append(rows, style.Render(pad(line, width)))
 		}
 		if len(commands) == 0 {
@@ -909,13 +973,12 @@ func (m *viewer) overlay() {
 	content := bodyStyle.Render(body) + "\n\n" +
 		s.dialogMuted.Render(ansi.Truncate(hints, width, "…"))
 	border := m.boxBorder()
-	box := lipgloss.NewStyle().
+	box := t.borderStyle().
 		Width(width+6).
 		Padding(1, 2).
 		Background(surface).
 		Foreground(lipgloss.Color(t.Text)).
 		Border(border).
-		BorderForeground(lipgloss.Color(t.Border)).
 		Render(content)
 	box = m.titleBox(box, title, m.dialogAncestors())
 	boxWidth, boxHeight := lipgloss.Width(box), lipgloss.Height(box)
