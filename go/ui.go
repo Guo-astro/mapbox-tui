@@ -53,19 +53,22 @@ type uiState struct {
 	selected       int
 	themeBefore    int
 	menuNavigated  bool
-	detailsFocused bool
+	detailsOpen    bool
+	filesCollapsed bool
+	filesSelected  int
+	filesVisited   bool
 	notice         string
 }
 
 type dialogFrame struct {
 	kind                        dialogKind
 	selected, searchPosition    int
-	menuNavigated, mapFocused   bool
+	menuNavigated, collapsed    bool
 	searchValue, notice, action string
 	page                        pager.Model
 }
 
-type shortcutMap struct{ compact, playing, detailsFocused, freeRoam, profiles bool }
+type shortcutMap struct{ compact, playing, detailsOpen, freeRoam, profiles bool }
 
 type viewerCommand struct {
 	title, shortcut, action   string
@@ -113,8 +116,8 @@ func menuStep(selected, direction, count int) int {
 
 func (k shortcutMap) ShortHelp() []key.Binding {
 	focus := "details"
-	if k.detailsFocused {
-		focus = "map"
+	if k.detailsOpen {
+		focus = "close details"
 	}
 	if k.freeRoam {
 		if k.compact {
@@ -132,7 +135,7 @@ func (k shortcutMap) ShortHelp() []key.Binding {
 			binding("ctrl+o", "open"),
 			binding("ctrl+l", "files"),
 			binding("ctrl+k", "commands"),
-			binding("tab", focus),
+			binding("ctrl+b", focus),
 			binding("q", "quit"),
 		}
 	}
@@ -161,7 +164,7 @@ func (k shortcutMap) ShortHelp() []key.Binding {
 		keys,
 		binding("ctrl+k", "commands"),
 		binding("p", "speed"),
-		binding("tab", focus),
+		binding("ctrl+b", focus),
 	)
 	return append(keys, binding("q", "quit"))
 }
@@ -177,13 +180,15 @@ func (k shortcutMap) FullHelp() [][]key.Binding {
 				binding("+/-", "zoom"),
 				binding("ctrl/cmd+wheel", "2x zoom speed"),
 				binding("f/r", "fit all visible"),
+				binding("c", "center selected location"),
 				binding(",/.", "rotate"),
 				binding("n", "north-up"),
 			},
 			{
 				binding("click", "select coordinates"),
 				binding("enter", "inspect location"),
-				binding("tab", "focus map/details"),
+				binding("ctrl+b", "show/hide sidebar"),
+				binding("tab", "next sidebar tab"),
 			},
 			elevation,
 			{
@@ -195,7 +200,7 @@ func (k shortcutMap) FullHelp() [][]key.Binding {
 				binding("a", "ASCII map"),
 				binding("v", "credits"),
 				binding("m", "toggle camera animation"),
-				binding("esc", "close panel"),
+				binding("esc", "close panel / clear location"),
 				binding("q", "quit"),
 			},
 		}
@@ -206,7 +211,7 @@ func (k shortcutMap) FullHelp() [][]key.Binding {
 			binding("+/-", "zoom"),
 			binding("ctrl/cmd+wheel", "2x zoom speed"),
 			binding("f/r", "fit all visible"),
-			binding("c", "center and follow"),
+			binding("c", "center selection / follow track"),
 			binding(",/.", "rotate"),
 			binding("n", "north-up"),
 		},
@@ -215,7 +220,8 @@ func (k shortcutMap) FullHelp() [][]key.Binding {
 			binding("pgup/pgdown", "seek 100 points"),
 			binding("home/end", "first/last point"),
 			binding("enter", "inspect position"),
-			binding("tab", "focus map/details"),
+			binding("ctrl+b", "show/hide sidebar"),
+			binding("tab", "next sidebar tab"),
 		},
 		{
 			binding("space", "play/pause selected activity"),
@@ -232,7 +238,7 @@ func (k shortcutMap) FullHelp() [][]key.Binding {
 			binding("a", "ASCII map"),
 			binding("v", "credits"),
 			binding("m", "toggle camera animation"),
-			binding("esc", "close panel"),
+			binding("esc", "close panel / clear location"),
 			binding("q", "quit"),
 		},
 	}
@@ -296,14 +302,19 @@ func (m *viewer) gradient(s string, background color.Color) string {
 }
 func (m *viewer) closeDialog() {
 	wasPlanner := m.journeyPanelOpen()
+	if m.ui.dialog == dialogWorkspace {
+		m.ui.filesSelected = m.ui.selected
+	}
 	m.restoreThemePreview()
 	m.cancelPlaceSearch()
 	m.planner.showRevision = nil
+	m.planner.pickingStop = false
 	m.ui.dialog = dialogNone
 	m.ui.parents = nil
 	m.ui.search.Blur()
 	m.ui.inputID = ""
 	m.ui.notice = ""
+
 	if wasPlanner {
 		m.layout()
 	}
@@ -311,13 +322,19 @@ func (m *viewer) closeDialog() {
 }
 func (m *viewer) openDialog(kind dialogKind) tea.Cmd {
 	wasPlanner := m.journeyPanelOpen()
+	if m.ui.dialog == dialogWorkspace {
+		m.ui.filesSelected = m.ui.selected
+	}
 	m.restoreThemePreview()
 	if m.placeSearchOpen() || kind == dialogSearch {
 		m.cancelPlaceSearch()
 	}
 	m.planner.showRevision = nil
-	m.planner.mapFocused = false
+	m.planner.collapsed = false
 	m.ui.dialog = kind
+	if kind == dialogJourney {
+		m.planner.addingWaypoint = false
+	}
 	m.ui.parents = nil
 	m.ui.search.Blur()
 	m.ui.inputID = ""
@@ -363,6 +380,12 @@ func (m *viewer) openDialog(kind dialogKind) tea.Cmd {
 			m.ui.selected = p.speed
 		}
 	case dialogWorkspace:
+		m.ui.filesCollapsed = false
+		if m.ui.filesVisited {
+			m.ui.selected = m.ui.filesSelected
+			break
+		}
+		m.ui.filesVisited = true
 		for i, row := range m.workspaceRows() {
 			if m.workspace.selection != nil && row.ref == m.workspace.selection.ref {
 				m.ui.selected = i
@@ -379,7 +402,7 @@ func (m *viewer) pushDialog(kind dialogKind) tea.Cmd {
 		frame := dialogFrame{
 			kind: m.ui.dialog, selected: m.ui.selected, menuNavigated: m.ui.menuNavigated,
 			searchValue: m.ui.search.Value(), searchPosition: m.ui.search.Position(),
-			notice: m.ui.notice, page: m.ui.page, mapFocused: m.planner.mapFocused,
+			notice: m.ui.notice, page: m.ui.page, collapsed: m.planner.collapsed,
 		}
 		if frame.kind == dialogMapbox {
 			actions := m.mapboxActions()
@@ -408,10 +431,18 @@ func (m *viewer) backDialog() tea.Cmd {
 	m.ui.selected, m.ui.menuNavigated = frame.selected, frame.menuNavigated
 	m.ui.notice, m.ui.page = frame.notice, frame.page
 	m.ui.page.Style = m.styles.dialogText
-	m.planner.mapFocused = frame.mapFocused
+	m.planner.collapsed = frame.collapsed
 	if frame.kind == dialogCommands {
 		m.ui.search.SetValue(frame.searchValue)
 		m.ui.search.SetCursor(frame.searchPosition)
+	}
+	if frame.kind == dialogJourneyLocation {
+		m.ui.inputID = rand.Text()
+		m.ui.search.SetValue(frame.searchValue)
+		m.ui.search.SetCursor(frame.searchPosition)
+		if !m.planner.collapsed {
+			command = tea.Batch(command, m.ui.search.Focus())
+		}
 	}
 	if frame.kind == dialogMapbox {
 		for i, action := range m.mapboxActions() {
@@ -462,10 +493,16 @@ func (m *viewer) commands() []viewerCommand {
 	if m.activeTrack() != nil {
 		commands = append(commands, viewerCommand{title: "Free roam (clear selection)", action: "roam"})
 	}
+	if m.inspected != nil || m.activePlayback() != nil {
+		title := "Center and follow position"
+		if m.inspected != nil {
+			title = "Center selected location"
+		}
+		commands = append(commands, viewerCommand{title: title, shortcut: "c", action: "center"})
+	}
 	if m.activePlayback() != nil {
 		commands = append(
 			commands,
-			viewerCommand{title: "Center and follow position", shortcut: "c", action: "center"},
 			viewerCommand{title: "Playback speed", shortcut: "p", action: "speed"},
 		)
 		toggles = append(toggles, viewerCommand{
@@ -579,10 +616,7 @@ func (m *viewer) updateDialog(msg tea.Msg) tea.Cmd {
 	}
 	if v, ok := msg.(tea.KeyPressMsg); ok {
 		pressed := v.String()
-		closeCredits := m.ui.dialog == dialogCredits && pressed == "v"
-		closeHelp := m.ui.dialog == dialogHelp && pressed == "?"
-		closeWorkspace := m.ui.dialog == dialogWorkspace && pressed == "ctrl+l"
-		if pressed == "esc" || closeCredits || closeHelp || closeWorkspace {
+		if pressed == "esc" {
 			return m.backDialog()
 		}
 		switch m.ui.dialog {
@@ -838,18 +872,17 @@ func (m *viewer) sourceCreditsContent(sources sourceView) string {
 func (m *viewer) overlay() {
 	dialogOpen := m.ui.dialog != dialogNone
 	hasRoom := m.width >= 30 && m.height >= 12
-	if !dialogOpen || !hasRoom || m.journeyPanelOpen() {
+	if !dialogOpen || !hasRoom || m.journeyPanelOpen() || m.ui.dialog == dialogWorkspace {
 		return
 	}
-	depth := min(len(m.ui.parents), m.width-9, m.height-9)
-	width := min(64, m.width-8-depth)
+	width := min(64, m.width-8)
 	if m.ui.dialog == dialogSpeed || m.ui.dialog == dialogThemes {
-		width = min(38, m.width-8-depth)
+		width = min(38, m.width-8)
 	}
 	if m.ui.dialog == dialogMapbox {
-		width = min(52, m.width-8-depth)
+		width = min(52, m.width-8)
 	}
-	height := max(1, min(17, m.height-10, m.height-8-depth))
+	height := max(1, min(17, m.height-10, m.height-8))
 	if m.ui.dialog == dialogSpeed || m.ui.dialog == dialogThemes {
 		height = min(height, 7)
 	}
@@ -873,22 +906,20 @@ func (m *viewer) overlay() {
 		MaxWidth(width).
 		Height(height).
 		MaxHeight(height)
-	content := m.gradient(title, surface) + "\n\n" + bodyStyle.Render(body) + "\n\n" +
+	content := bodyStyle.Render(body) + "\n\n" +
 		s.dialogMuted.Render(ansi.Truncate(hints, width, "…"))
-	border := lipgloss.RoundedBorder()
-	if m.settings.ASCII {
-		border = lipgloss.ASCIIBorder()
-	}
+	border := m.boxBorder()
 	box := lipgloss.NewStyle().
 		Width(width+6).
 		Padding(1, 2).
 		Background(surface).
 		Foreground(lipgloss.Color(t.Text)).
 		Border(border).
-		BorderForegroundBlend(lipgloss.Color(t.Accent), lipgloss.Color(t.Highlight)).
+		BorderForeground(lipgloss.Color(t.Border)).
 		Render(content)
+	box = m.titleBox(box, title, m.dialogAncestors())
 	boxWidth, boxHeight := lipgloss.Width(box), lipgloss.Height(box)
-	x, y := (m.width-boxWidth-depth)/2, (m.height-boxHeight-depth)/2
+	x, y := (m.width-boxWidth)/2, (m.height-boxHeight)/2
 	if m.ui.dialog == dialogSpeed {
 		x, y = max(1, m.camera.Width-boxWidth), max(1, m.height-boxHeight-3)
 	}
@@ -899,39 +930,28 @@ func (m *viewer) overlay() {
 			y = max(0, min(m.height-boxHeight-3, int(point.Y/4)+2))
 		}
 	}
-	x = max(0, min(m.width-boxWidth-depth, x))
-	y = max(0, min(m.height-boxHeight-depth, y))
+	x = max(0, min(m.width-boxWidth, x))
+	y = max(0, min(m.height-boxHeight, y))
 	baseStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color(t.Dimmed)).
 		Background(lipgloss.Color(t.Background))
 	base := lipgloss.NewLayer(baseStyle.Render(ansi.Strip(m.content)))
-	layers := []*lipgloss.Layer{base}
-	// Matching the active footprint exposes only back-frame edges, even when parent dialogs differ in size.
-	backFrame := lipgloss.NewStyle().Foreground(lipgloss.Color(t.Dimmed)).
-		Background(surface).Render(ansi.Strip(box))
-	for i := range depth {
-		layers = append(layers, lipgloss.NewLayer(backFrame).X(x+i).Y(y+i).Z(i+1))
-	}
-	layers = append(layers, lipgloss.NewLayer(box).X(x+depth).Y(y+depth).Z(depth+1))
 	canvas := lipgloss.NewCanvas(m.width, m.height).Compose(
-		lipgloss.NewCompositor(layers...),
+		lipgloss.NewCompositor(base, lipgloss.NewLayer(box).X(x).Y(y).Z(1)),
 	)
-	// Nested Bubbles views reset some cells to the terminal's default background.
-	for i := range depth + 1 {
-		for row := y + i + 1; row < y+i+boxHeight-1; row++ {
-			for column := x + i + 1; column < x+i+boxWidth-1; column++ {
-				if cell := canvas.CellAt(column, row); cell != nil && cell.Style.Bg == nil {
-					cell.Style.Bg = surface
-				}
+	// Bubbles views can reset cells to the terminal's default background.
+	for row := y + 1; row < y+boxHeight-1; row++ {
+		for column := x + 1; column < x+boxWidth-1; column++ {
+			if cell := canvas.CellAt(column, row); cell != nil && cell.Style.Bg == nil {
+				cell.Style.Bg = surface
 			}
 		}
 	}
 	m.content = canvas.Render()
-	x, y = x+depth, y+depth
 	if m.ui.dialog == dialogCommands || m.placeSearchOpen() {
 		if cursor := m.ui.search.Cursor(); cursor != nil {
 			cursor.X += max(0, x) + 3
-			cursor.Y += max(0, y) + 4
+			cursor.Y += max(0, y) + 2
 			if m.ui.notice != "" {
 				cursor.Y++
 			}

@@ -31,7 +31,7 @@ func journeyViewer(t *testing.T) *viewer {
 	if err := m.initUI(); err != nil {
 		t.Fatal(err)
 	}
-	m.layout()
+	m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 	return m
 }
 
@@ -42,9 +42,7 @@ func enterJourneyCoordinate(m *viewer, index int, text string) {
 }
 
 func showJourneyFromMenu(m *viewer) tea.Cmd {
-	m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
-	_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	return cmd
+	return m.showJourneyOnMap()
 }
 
 func TestJourneyViewerManualEditReverseAndReopen(t *testing.T) {
@@ -85,12 +83,12 @@ func TestJourneyViewerManualEditReverseAndReopen(t *testing.T) {
 		t.Fatal("removed Show shortcut still ran the action")
 	}
 	_, content, _ := m.journeyDialogContent(70, 17)
-	if !strings.Contains(content, "Show journey on map") || strings.Contains(content, "Show journey on map (") {
-		t.Fatal("menu-only Show action was missing or advertised a shortcut")
+	if strings.Contains(content, "Show journey on map") || strings.Contains(content, "Add waypoint (ctrl+n)") {
+		t.Fatal("redundant journey action remains in the menu")
 	}
 	showJourneyFromMenu(m)
 	m.rebuild()
-	if !strings.Contains(ansi.Strip(m.content), "Journey plan") || m.activePlayback() != nil || m.profileHeight != 0 {
+	if !strings.Contains(ansi.Strip(m.content), "Manual") || m.activePlayback() != nil || m.profileHeight != 0 {
 		t.Fatal("manual journey became a recorded activity or elevation profile")
 	}
 	ref := m.planner.ref
@@ -98,9 +96,9 @@ func TestJourneyViewerManualEditReverseAndReopen(t *testing.T) {
 	if m.ui.dialog != dialogJourney || m.planner.ref != ref || requests != 0 {
 		t.Fatal("reopening created a new journey or made a location request")
 	}
-	m.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
+	m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.ui.dialog != dialogNone || m.planner.ref != ref || requests != 0 {
-		t.Fatal("Journey Planner shortcut did not close the planner without changing the journey")
+		t.Fatal("Escape did not close the planner without changing the journey")
 	}
 }
 
@@ -124,18 +122,18 @@ func TestDisconnectedJourneySearchIsDisabledButManualPlanningWorks(t *testing.T)
 	}
 }
 
-func TestJourneyLocationBackRestoresMapFocus(t *testing.T) {
+func TestJourneyInspectionBackRestoresCollapsedPlanner(t *testing.T) {
 	m := journeyViewer(t)
 	m.Update(tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
-	m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m.Update(tea.KeyPressMsg{Code: 'b', Mod: tea.ModCtrl})
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.ui.dialog != dialogJourneyLocation || m.planner.mapFocused {
-		t.Fatal("location editor did not take keyboard focus")
+	if m.ui.dialog != dialogInspect || m.planner.collapsed {
+		t.Fatal("collapsed planner did not allow inspecting the current position")
 	}
 	m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	row, center := m.planner.row, m.camera.Center
 	m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-	if !m.planner.mapFocused || m.planner.row != row || m.camera.Center == center {
+	if !m.planner.collapsed || m.planner.row != row || m.camera.Center == center {
 		t.Fatal("cancelled location edit did not restore map keyboard focus")
 	}
 }
@@ -369,7 +367,11 @@ func TestJourneyUnicodeLocationsSurviveGeometryAndEdits(t *testing.T) {
 				t.Fatalf("workspace corrupted printable Unicode or retained controls: %+v", stop.Location)
 			}
 		}
-		track := m.activeTrack()
+		entry, index, err := m.workspace.lookup(m.planner.ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		track := entry.document.Items[index].Track
 		for _, points := range [][]Point{track.Points, track.Waypoints} {
 			for _, point := range points {
 				if point.Name != "Café Zürich 東京 " {
@@ -642,7 +644,7 @@ func TestJourneyNoticesKeepSelectedActionVisible(t *testing.T) {
 			m.Update(tea.KeyPressMsg{Code: tea.KeyEnd})
 			m.Update(tea.KeyPressMsg{Code: tea.KeyUp, Mod: tea.ModAlt})
 			m.rebuild()
-			if m.ui.notice == "" || !strings.Contains(ansi.Strip(m.content), "> Show journey on map") {
+			if m.ui.notice == "" || !strings.Contains(ansi.Strip(m.content), "> Copy journey to clip") {
 				t.Fatalf("notice hid selected action at %v, ASCII %v: %s", size, ascii, ansi.Strip(m.content))
 			}
 		}
@@ -712,7 +714,7 @@ func TestJourneyCoordinateInspectionAndPlaybackCommands(t *testing.T) {
 	}
 	m.openDialog(dialogCommands)
 	for _, command := range m.commands() {
-		if command.action == "speed" || command.action == "play" || command.action == "center" {
+		if command.action == "speed" || command.action == "play" {
 			t.Fatal("journey exposed an unavailable playback command")
 		}
 	}
@@ -754,6 +756,77 @@ func TestJourneyDialogsFitWideNarrowAndASCIITerminals(t *testing.T) {
 					t.Fatal("ASCII planner rendered Braille")
 				}
 			}
+		}
+	}
+}
+
+func TestJourneyMapPickPreservesImportedPlayback(t *testing.T) {
+	m := journeyViewer(t)
+	ref, err := m.workspace.open("../fixtures/country-ride.gpx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.openJourney()
+	m.editJourneyLocation(0)
+	playback := m.activePlayback()
+	playback.Playing = true
+	m.lastTick = time.Now()
+	m.Update(tea.MouseClickMsg{X: 3, Y: 4, Button: tea.MouseLeft})
+	m.Update(tea.MouseReleaseMsg{X: 3, Y: 4, Button: tea.MouseLeft})
+	j, _ := m.workspace.journey(m.planner.ref)
+	if j.Stops[0].Location == nil || !playback.Playing || m.workspace.selection.ref != ref {
+		t.Fatal("journey map pick failed or interrupted the imported activity")
+	}
+}
+
+func TestNestedJourneyHeaderCapturesMouse(t *testing.T) {
+	for _, dialog := range []dialogKind{dialogJourneyRouting, dialogJourneyRoutingHelp} {
+		for _, button := range []tea.MouseButton{tea.MouseLeft, tea.MouseRight} {
+			m := journeyViewer(t)
+			m.openJourney()
+			m.pushDialog(dialog)
+			for y := m.mapOriginY(); y < m.journeyPanelY(); y++ {
+				x := m.width - 3
+				m.Update(tea.MouseClickMsg{X: x, Y: y, Button: button})
+				if m.dragging || m.rotating {
+					t.Fatal("header click started a map gesture")
+				}
+				m.Update(tea.MouseReleaseMsg{X: x, Y: y, Button: button})
+				if m.inspected != nil {
+					t.Fatal("header click inspected the covered map")
+				}
+			}
+		}
+	}
+}
+
+func TestUndoRestoresCompleteJourneySelection(t *testing.T) {
+	for _, imported := range []bool{false, true} {
+		m := journeyViewer(t)
+		m.openJourney()
+		enterJourneyCoordinate(m, 0, "51.3,-2.5")
+		enterJourneyCoordinate(m, 1, "51.4,-2.6")
+		m.planner.row = 0
+		m.Update(tea.KeyPressMsg{Code: tea.KeyDelete})
+		if m.workspace.selection != nil {
+			t.Fatal("incomplete journey remained selected")
+		}
+		expected := m.planner.ref
+		if imported {
+			var err error
+			expected, err = m.workspace.open("../fixtures/country-ride.gpx")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.activePlayback().Playing = true
+		}
+		m.Update(tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl})
+		j, _ := m.workspace.journey(m.planner.ref)
+		if !j.hasCompleteLocations() || m.workspace.selection == nil || m.workspace.selection.ref != expected {
+			t.Fatal("undo did not restore the journey or preserve the expected selection")
+		}
+		if imported && !m.activePlayback().Playing {
+			t.Fatal("undo interrupted imported playback")
 		}
 	}
 }

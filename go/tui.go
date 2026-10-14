@@ -33,6 +33,8 @@ type viewer struct {
 	workspace                 Workspace
 	pendingPaths              []string
 	startupCameraPending      bool
+	startupJourneyRouting     bool
+	windowSizeKnown           bool
 	initialised               bool
 	provider                  *Provider
 	sources                   sourceLoader
@@ -65,6 +67,7 @@ type viewer struct {
 	planner                   journeyUI
 	searchPosition            *XY
 	searchCredit              string
+	searchName                string
 	places                    *placeClient
 	directions                *directionsClient
 	authID                    uint64
@@ -87,7 +90,8 @@ func (m *viewer) Init() tea.Cmd {
 		credentials = m.discoverCredentials(false, false)
 	}
 	if m.path == "" {
-		return tea.Batch(tick(), m.freeRoam(), credentials)
+		navigation := m.freeRoam()
+		return tea.Batch(tick(), navigation, credentials, m.startJourneyFromArgs())
 	}
 	return tea.Batch(tick(), m.load(m.path), credentials)
 }
@@ -193,10 +197,14 @@ func (m *viewer) load(path string) tea.Cmd {
 	})
 }
 func mapSize(w, h int) (int, int) {
-	if w >= 90 {
-		return max(1, w-32), max(1, h-6)
+	footer := 2
+	if w < 110 {
+		footer = 3
 	}
-	return max(1, w-2), max(1, h-9)
+	if w < 60 {
+		footer = 4
+	}
+	return max(1, w-2), max(1, h-footer-2)
 }
 func (m *viewer) fetch() tea.Cmd {
 	return m.fetchAt(time.Now())
@@ -323,12 +331,16 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.WindowSizeMsg:
 		m.width, m.height = v.Width, v.Height
+		m.windowSizeKnown = true
 		m.layout()
 		if m.ui.dialog == dialogFiles {
 			m.ui.picker.SetHeight(max(1, min(17, m.height-10)-2))
 			m.ui.picker, _ = m.ui.picker.Update(msg)
 		}
 		m.dirty = true
+		if m.initialised && !m.loading && len(m.pendingPaths) == 0 {
+			return m, m.startJourneyFromArgs()
+		}
 	case loaded:
 		if v.id != m.loadID {
 			return m, nil
@@ -380,7 +392,7 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pendingPaths = m.pendingPaths[1:]
 			return m, m.load(path)
 		}
-		return m, m.fetch()
+		return m, tea.Batch(m.fetch(), m.startJourneyFromArgs())
 	case sourceResult:
 		m.configureSources()
 		if m.sources.accept(v, m.destination(), time.Now()) {
@@ -425,18 +437,84 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		key := v.String()
 		enteringText := m.ui.dialog == dialogCommands || m.ui.dialog == dialogFiles || m.placeSearchOpen()
+		if m.journeyPanelOpen() && (m.planner.collapsed || m.planner.pickingStop) {
+			enteringText = false
+		}
 		if key == "ctrl+c" || (key == "q" && !enteringText) {
 			m.cancelPlaceSearch()
 			m.workspace.cancelJourneyRoutes()
 			m.cancelAuth()
 			return m, tea.Quit
 		}
-		if m.ui.dialog == dialogJourney && key == "tab" {
-			m.planner.mapFocused = !m.planner.mapFocused
-			m.dirty = true
+		if key == "esc" && !m.planner.pickingStop && len(m.ui.parents) == 0 &&
+			(m.ui.dialog == dialogWorkspace || m.ui.dialog == dialogJourney) {
+			m.ui.detailsOpen = false
+			m.closeDialog()
 			return m, nil
 		}
-		mapKey := m.ui.dialog == dialogJourney && m.planner.mapFocused && journeyMapKey(key)
+		panelInput := m.ui.dialog == dialogNone || m.ui.dialog == dialogWorkspace || m.journeyPanelOpen()
+		if panelInput {
+			switch key {
+			case "ctrl+b":
+				return m, m.togglePanel()
+			case "tab":
+				return m, m.cyclePanel()
+			case "shift+tab":
+				return m, m.cyclePanelDirection(-1)
+			case "ctrl+l":
+				return m, m.switchPanel(dialogWorkspace)
+			case "ctrl+j":
+				return m, m.switchPanel(dialogJourney)
+			}
+		}
+		if m.ui.dialog == dialogWorkspace {
+			switch key {
+			case "/":
+				return m, m.pushDialog(dialogSearch)
+			case "?":
+				return m, m.pushDialog(dialogHelp)
+			case "ctrl+o", "o":
+				return m, m.openDialog(dialogFiles)
+			}
+		}
+		if m.journeyPanelOpen() && m.planner.pickingStop {
+			switch key {
+			case "esc":
+				m.planner.pickingStop = false
+				m.dirty = true
+				if m.ui.dialog == dialogJourneyLocation {
+					return m, m.ui.search.Focus()
+				}
+				return m, nil
+			case "enter":
+				cmd, _ := m.pickJourneyLocation(unproject(m.camera.Center))
+				return m, cmd
+			}
+		}
+		if m.journeyPanelOpen() && m.planner.pickingStop && !journeyMapKey(key) {
+			return m, nil
+		}
+		if m.journeyPanelOpen() && (!m.placeSearchOpen() || m.planner.collapsed) {
+			switch key {
+			case "/":
+				return m, m.pushDialog(dialogSearch)
+			case "?":
+				return m, m.pushDialog(dialogHelp)
+			}
+		}
+
+		hiddenPanel := (m.journeyPanelOpen() && m.planner.collapsed) ||
+			(m.ui.dialog == dialogWorkspace && m.ui.filesCollapsed)
+		mapKey := hiddenPanel || (m.journeyPanelOpen() && m.planner.pickingStop && journeyMapKey(key))
+		if hiddenPanel {
+			switch key {
+			case "enter":
+				return m, m.pushDialog(dialogInspect)
+			case "esc":
+				m.closeDialog()
+				return m, nil
+			}
+		}
 		if m.ui.dialog != dialogNone && !mapKey {
 			return m, m.updateDialog(msg)
 		}
@@ -464,33 +542,42 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "enter":
 			return m, m.openDialog(dialogInspect)
-		case "tab":
-			if m.width >= 90 {
-				m.ui.detailsFocused = !m.ui.detailsFocused
+
+		}
+		if m.ui.detailsOpen && m.ui.dialog == dialogNone {
+			switch key {
+			case "home":
+				m.ui.details.GotoTop()
 				m.dirty = true
 				return m, nil
-			}
-			return m, m.openDialog(dialogInspect)
-		}
-		if m.ui.detailsFocused {
-			switch key {
-			case "up", "down", "left", "right", "h", "j", "k", "l", "pgup", "pgdown", "home", "end":
+			case "end":
+				m.ui.details.GotoBottom()
+				m.dirty = true
+				return m, nil
+			case "pgup", "pgdown":
 				var cmd tea.Cmd
 				m.ui.details, cmd = m.ui.details.Update(msg)
 				m.dirty = true
 				return m, cmd
 			case "esc":
-				m.ui.detailsFocused = false
+				m.ui.detailsOpen = false
 				m.dirty = true
 				return m, nil
 			}
+		}
+		if key == "esc" {
+			m.inspected, m.searchPosition = nil, nil
+			m.searchName = ""
+			m.ui.details.GotoTop()
+			m.dirty = true
+			return m, nil
 		}
 		if key == "e" && len(m.workspace.profileItems()) > 0 {
 			return m, m.toggleMenuOption("profile")
 		}
 		if m.activePlayback() == nil {
 			switch key {
-			case "[", "]", "pgup", "pgdown", "home", "end", "c", "space", "s", "S":
+			case "[", "]", "pgup", "pgdown", "home", "end", "space", "s", "S":
 				return m, nil
 			}
 		}
@@ -550,10 +637,12 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			selected = len(m.activeTrack().Points) - 1
 			m.inspected = nil
 		case "c":
-			if pos := m.position(); pos != nil {
-				if m.inspected == m.searchPosition {
-					m.inspected = nil
-				}
+			if m.inspected != nil {
+				target := m.destination()
+				target.Center = project(m.inspected.X, m.inspected.Y)
+				m.following = false
+				m.moveCamera(target)
+			} else if pos := m.position(); pos != nil {
 				target := m.destination()
 				target.Center = pos.World
 				m.following = true
@@ -586,17 +675,46 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		mouse := v.Mouse()
 		m.advancePlayback(time.Now())
 		x, y := mouse.X, mouse.Y
+		if click, ok := v.(tea.MouseClickMsg); ok && click.Button == tea.MouseLeft {
+			panelInput := m.ui.dialog == dialogNone || m.ui.dialog == dialogWorkspace || m.journeyPanelOpen()
+			if panelInput {
+				if cmd, handled := m.clickPanelTab(x, y); handled {
+					return m, cmd
+				}
+			}
+			if y == m.height-2 && m.hasJourneyContext() {
+				if m.journeyPanelOpen() {
+					m.closeDialog()
+					return m, nil
+				}
+				if m.ui.dialog == dialogNone || m.ui.dialog == dialogWorkspace {
+					return m, m.openJourney()
+				}
+			}
+		}
 		insideMapX := x >= 1 && x < m.camera.Width+1
 		originY := m.mapOriginY()
 		insideMapY := y >= originY && y < m.camera.Height+originY
 		inside := insideMapX && insideMapY
-		overDetails := m.width >= 90 && x >= m.camera.Width+4
+		drawerVisible := m.ui.dialog == dialogNone && m.ui.detailsOpen
+		panelX := x >= m.journeyPanelX() && x < m.width-1
+		overDetails := drawerVisible && panelX && y >= m.contextDrawerY() && y < m.contextDrawerY()+m.contextDrawerHeight()
 		mapGesture := m.dragging || m.rotating
-		outsidePlannerMap := !m.journeyPanelOpen() || (!inside && !mapGesture)
-		if m.ui.dialog != dialogNone && outsidePlannerMap {
+		overPlanner := m.journeyPanelVisible() && panelX && y >= originY && y < m.camera.Height+1
+		if overPlanner && !mapGesture {
 			return m, m.updateDialog(msg)
 		}
-		if !inside && !mapGesture && overDetails && !m.journeyPanelOpen() {
+		if m.ui.dialog == dialogWorkspace {
+			if !m.ui.filesCollapsed && panelX && y >= 1 && y < m.camera.Height+1 && !mapGesture {
+				return m, m.updateFilesPanelMouse(msg)
+			}
+		} else if m.ui.dialog != dialogNone && !m.journeyPanelOpen() {
+			return m, m.updateDialog(msg)
+		}
+		if m.journeyPanelOpen() && !inside && !mapGesture {
+			return m, nil
+		}
+		if overDetails && !mapGesture && !m.journeyPanelOpen() {
 			var cmd tea.Cmd
 			m.ui.details, cmd = m.ui.details.Update(msg)
 			m.dirty = true
@@ -607,7 +725,6 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if inside && (mouse.Button == tea.MouseLeft || mouse.Button == tea.MouseRight) {
 				m.motion.Active = false
 				m.following = false
-				m.ui.detailsFocused = false
 				m.dragging = mouse.Button == tea.MouseLeft
 				m.rotating = mouse.Button == tea.MouseRight
 				m.moved = false
@@ -630,13 +747,13 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case tea.MouseReleaseMsg:
 			if m.dragging && !m.moved && inside {
-				m.pausePlayback()
 				p := XY{float64((x-1)*2 + 1), float64((y-originY)*4 + 2)}
 				world := unproject(m.camera.world(p))
 				m.dragging, m.rotating = false, false
 				if cmd, picked := m.pickJourneyLocation(world); picked {
 					return m, cmd
 				}
+				m.pausePlayback()
 				m.inspected = &world
 				if ref, i := m.workspace.pick(m.camera, p); ref != (ItemRef{}) && !m.journeyPanelOpen() {
 					_ = m.workspace.selectItem(ref)
@@ -674,27 +791,15 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *viewer) layout() {
 	w, h := mapSize(m.width, m.height)
-	if m.journeySidebar() {
-		w, h = m.width-m.journeyPanelWidth()-4, m.height-6
-	} else if m.journeyPanelOpen() {
-		w, h = m.width-2, m.height-m.journeyStripHeight()-4
+	if m.hasJourneyContext() {
+		h--
 	}
-	if len(m.workspace.items()) > 1 {
+	if len(m.workspace.items()) > 1 && m.showProfile {
 		h--
 	}
 	m.profileHeight = profileRows(h, m.showProfile && len(m.workspace.profileItems()) > 0)
-	sidebarInput := m.journeySidebar() && m.ui.dialog == dialogJourneyLocation
-	if sidebarInput && h-m.profileHeight < 4 {
-		m.profileHeight = 0
-	}
 	m.camera.Width, m.camera.Height = max(1, w), max(1, h-m.profileHeight)
 	m.motion.Target.Width, m.motion.Target.Height = m.camera.Width, m.camera.Height
-	if m.width < 90 {
-		m.ui.detailsFocused = false
-	}
-	if m.journeyPanelOpen() {
-		m.ui.detailsFocused = false
-	}
 }
 func (m *viewer) pausePlayback() {
 	if p := m.activePlayback(); p != nil {
@@ -928,23 +1033,14 @@ func (m *viewer) rebuild() {
 		m.workspace.sceneItems(),
 		cursor,
 	)
-	details := m.details()
+	if m.inspected != nil {
+		// Inspection belongs to the viewer, independently of the playback cursor.
+		g.owner = ItemRef{}
+		g.label(c.screen(project(m.inspected.X, m.inspected.Y)), "*", roleCursor, false)
+	}
 	t, s := m.theme(), m.styles
-	provider := s.accent.Background(lipgloss.Color(t.Selected)).Padding(0, 1).Render(m.provider.Kind)
-	name := "Free roam"
-	if t := m.activeTrack(); t != nil {
-		name = t.Name
-	}
-	if len(m.workspace.documents) > 1 {
-		name += fmt.Sprintf(" · %d files", len(m.workspace.documents))
-	}
-	title := m.gradient("Mapbox TUI", lipgloss.Color(t.Background)) + "  " +
-		s.heading.Foreground(lipgloss.Color(m.activeColor())).Render(name)
-	rows := []string{pad(title, m.width-lipgloss.Width(provider)-1) + " " + provider}
-	border := lipgloss.NormalBorder()
-	if m.settings.ASCII {
-		border = lipgloss.ASCIIBorder()
-	}
+	var rows []string
+	border := m.boxBorder()
 	mapRows := []string{}
 	for y := 0; y < c.Height; y++ {
 		mapRows = append(mapRows, m.gridRow(g, y, m.settings.ASCII))
@@ -953,75 +1049,12 @@ func (m *viewer) rebuild() {
 		Border(border).
 		BorderForeground(lipgloss.Color(t.Border)).
 		Render(strings.Join(mapRows, "\n"))
-	if m.journeySidebar() {
-		frame = lipgloss.JoinHorizontal(lipgloss.Top, frame, "  "+
-			strings.ReplaceAll(m.journeyPanel(), "\n", "\n  "))
-	} else if m.width >= 90 {
-		styled := []string{}
-		for i, line := range details {
-			style := s.text
-			if i == 0 || line == "Selected position" {
-				style = s.heading.Foreground(lipgloss.Color(t.Accent))
-			} else if i > 16 || strings.Contains(line, "unavailable") {
-				style = s.muted
-			}
-			styled = append(styled, style.Render(line))
-		}
-		m.ui.details.SetWidth(28)
-		m.ui.details.SetHeight(c.Height)
-		m.ui.details.SetContent(strings.Join(styled, "\n"))
-		focus := s.muted.Render("tab focus · wheel scroll")
-		if m.ui.detailsFocused {
-			focus = s.accent.Render("Details focused · tab map")
-		}
-		panel := "\n" + m.ui.details.View() + "\n" + focus
-		frame = lipgloss.JoinHorizontal(lipgloss.Top, frame, "  "+strings.ReplaceAll(panel, "\n", "\n  "))
-	}
-	if m.journeyStripHeight() > 0 {
-		rows = append(rows, m.journeyPanel())
-	}
 	rows = append(rows, frame)
 	profile := m.visibleProfile()
-	if len(m.workspace.items()) > 1 {
+	if len(m.workspace.items()) > 1 && m.showProfile {
 		rows = append(rows, m.workspaceLegend(m.width, profile))
 	}
-	if m.width < 90 && !m.journeyPanelOpen() {
-		if t := m.activeTrack(); t != nil {
-			summary := fmt.Sprintf(
-				"%.2f km | %d points | zoom %.2f | bearing %.0f",
-				t.Distance/1000,
-				len(t.Points),
-				c.Zoom,
-				c.Bearing,
-			)
-			rows = append(rows, m.paint(pad(summary, m.width), roleActiveRoute, m.activeSwatch()))
-			line := strings.Join(details[7:min(len(details), 14)], " | ")
-			hint := "[ ] select; PgUp/PgDn ±100; c follow · enter inspect"
-			if m.activePlayback() == nil {
-				j, _ := m.workspace.journey(m.workspace.selection.ref)
-				line = journeyRoutingStatus(j, t)
-				hint = "ctrl+j edit journey · enter details"
-			}
-			rows = append(
-				rows,
-				s.text.Render(pad(line, m.width)),
-				s.muted.Render(pad(hint, m.width)),
-			)
-		} else {
-			center := unproject(c.Center)
-			location := fmt.Sprintf("Lat %.6f | Lon %.6f", center.Y, center.X)
-			if m.inspected != nil {
-				location = fmt.Sprintf("Selected: %.6f, %.6f", m.inspected.Y, m.inspected.X)
-			}
-			summary := fmt.Sprintf("Free roam | zoom %.2f | bearing %.0f", c.Zoom, c.Bearing)
-			rows = append(
-				rows,
-				m.paint(pad(summary, m.width), roleActiveRoute),
-				s.text.Render(pad(location, m.width)),
-				s.muted.Render(pad("ctrl+l loaded files · f fit visible", m.width)),
-			)
-		}
-	}
+
 	if profile != nil {
 		header, chart, axis := profile.frame(pos)
 		rows = append(rows, s.heading.Foreground(lipgloss.Color(t.Accent)).Render(pad(header, m.width)))
@@ -1061,6 +1094,7 @@ func (m *viewer) rebuild() {
 		}
 		status = m.ui.spinner.View() + " " + label + " " + status
 	}
+	contextStatus := status
 	if playback != nil {
 		if m.progress == nil {
 			bar := progress.New(progress.WithoutPercentage(), progress.WithFillCharacters('█', '░'))
@@ -1086,31 +1120,27 @@ func (m *viewer) rebuild() {
 		status = m.progress.ViewAs(playback.ratio()) + "  " + m.paint(status, roleActiveRoute, m.activeSwatch())
 	}
 	m.ui.help.SetWidth(m.width)
-	keys := shortcutMap{
-		compact:        m.width < 90,
-		playing:        playback != nil && playback.Playing,
-		detailsFocused: m.ui.detailsFocused,
-		freeRoam:       m.activePlayback() == nil,
-	}
 	credits, _ := sources.attribution()
 	journeyCredits := strings.ReplaceAll(m.journeyCredits(sources.Credits...), "\n", " ")
 	notice := m.connectionNotice()
-	noticeFits := journeyCredits == "" || lipgloss.Width(notice+" "+journeyCredits) <= m.width
-	if notice != "" && noticeFits {
+	if notice != "" && journeyCredits == "" {
 		credits = notice
 	}
 	if journeyCredits != "" {
-		credits += " " + journeyCredits
-	}
-	if m.journeyStripHeight() == 0 {
-		help := m.ui.help.View(keys)
-		if m.journeyPanelOpen() {
-			help = s.muted.Render("ctrl+j planner · mouse pan/zoom · esc back/close")
+		if credits == "No basemap" {
+			credits = journeyCredits
+		} else {
+			credits += " " + journeyCredits
 		}
-		rows = append(rows, pad(status, m.width), pad(help, m.width))
 	}
+	rows = append(rows, m.contextFooter()...)
 	rows = append(rows, s.muted.Render(pad(credits, m.width)))
 	m.content = s.text.Background(lipgloss.Color(t.Background)).Width(m.width).Render(strings.Join(rows, "\n"))
+	if m.ui.detailsOpen && !m.journeyPanelOpen() && m.ui.dialog != dialogWorkspace {
+		m.contextDrawer(contextStatus)
+	}
+	m.overlayFilesPanel()
+	m.overlayJourneyPanel()
 	m.overlay()
 }
 func (m *viewer) View() tea.View {
@@ -1150,7 +1180,7 @@ func openViewerFiles(paths []string, a Args) error {
 		width:        120,
 		height:       40,
 		dirty:        true,
-		showProfile:  true,
+		showProfile:  false,
 		authFirstRun: len(paths) == 0 && !explicit && !p.quiet,
 	}
 	if len(paths) > 0 {

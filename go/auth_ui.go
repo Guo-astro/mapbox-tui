@@ -213,8 +213,11 @@ func (m *viewer) acceptCredentials(result credentialResult) tea.Cmd {
 		}
 	}
 	var routing tea.Cmd
-	if j, err := m.workspace.journey(m.planner.ref); err == nil && m.defaultJourneyMode(j) {
-		routing = m.calculateJourneyIfRouted()
+	if j, err := m.workspace.journey(m.planner.ref); err == nil {
+		if m.defaultJourneyMode(j) || (m.startupJourneyRouting && m.directions.token != "") {
+			m.startupJourneyRouting = false
+			routing = m.calculateJourneyIfRouted()
+		}
 	}
 	var search tea.Cmd
 	if m.placeSearchOpen() && m.places.token != "" {
@@ -429,5 +432,5 @@ func (m *viewer) mapboxHelpContent(width, height int) (string, string, string) {
 	m.ui.page.SetWidth(width)
 	m.ui.page.SetHeight(max(1, height))
 	m.ui.page.SetContent(content.String())
-	return "Mapbox installation", m.ui.page.View(), "↑/↓ scroll   esc close"
+	return "Installation", m.ui.page.View(), "↑/↓ scroll   esc close"
 }

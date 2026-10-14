@@ -36,6 +36,10 @@ func parseCLI(argv []string, output io.Writer) (cliCommand, error) {
 	var lon, lat, zoom, bearing, distance float64
 	var index, itemID int
 	var noProvider bool
+	var journeyStart, journeyEnd string
+	journeyModeName := "driving"
+	var journeyWaypoints []string
+	var journeyRequested bool
 	mapMode := command.Name == "open" || command.Name == "render" || command.Name == "bench"
 	if mapMode {
 		a.Aspect = fs.Float64("cell-aspect", 2, "cell height/width (1..3)")
@@ -55,6 +59,20 @@ func parseCLI(argv []string, output io.Writer) (cliCommand, error) {
 		fs.StringVar(&a.Provider, "provider", "", "legacy basemap selector; use --no-provider for offline viewing")
 	}
 	if command.Name == "open" {
+		fs.StringVar(&journeyStart, "start", "", "journey start as latitude,longitude; requires --end")
+		fs.StringVar(&journeyEnd, "end", "", "journey destination as latitude,longitude; requires --start")
+		fs.StringVar(&journeyModeName, "mode", "driving", "journey mode: manual, walking, cycling or driving")
+		fs.Func("waypoint", "journey waypoint as latitude,longitude; repeat in travel order", func(value string) error {
+			journeyWaypoints = append(journeyWaypoints, value)
+			journeyRequested = true
+			return nil
+		})
+		fs.Func("file", "load a track file; repeat for multiple imports (or use positional files)", func(value string) error {
+			if value == "" {
+				return fmt.Errorf("file path must not be empty")
+			}
+			return nil
+		})
 		fs.BoolVar(&a.NoAnimation, "no-animation", false, "disable camera transitions")
 		fs.StringVar(
 			&a.Theme,
@@ -123,6 +141,8 @@ func parseCLI(argv []string, output io.Writer) (cliCommand, error) {
 	}
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
+		case "start", "end", "mode":
+			journeyRequested = true
 		case "point-index":
 			a.PointIndex = &index
 		case "item-id":
@@ -141,6 +161,13 @@ func parseCLI(argv []string, output io.Writer) (cliCommand, error) {
 			a.ProviderSet = true
 		}
 	})
+	if journeyRequested {
+		journey, err := parseStartupJourney(journeyStart, journeyEnd, journeyWaypoints, journeyModeName)
+		if err != nil {
+			return command, err
+		}
+		a.Journey = journey
+	}
 	if a.ItemID != nil && *a.ItemID < 1 {
 		return command, fmt.Errorf("item-id must be positive")
 	}
@@ -180,7 +207,7 @@ func parseOptions(fs *flag.FlagSet, argv []string) ([]string, error) {
 			paths = append(paths, arg)
 			continue
 		}
-		name, _, inline := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
+		name, value, inline := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
 		option := fs.Lookup(name)
 		options = append(options, arg)
 		if option == nil {
@@ -190,6 +217,10 @@ func parseOptions(fs *flag.FlagSet, argv []string) ([]string, error) {
 		if !inline && (!isBool || !boolean.IsBoolFlag()) && i+1 < len(argv) {
 			i++
 			options = append(options, argv[i])
+			value = argv[i]
+		}
+		if name == "file" {
+			paths = append(paths, value)
 		}
 	}
 	return paths, fs.Parse(options)
