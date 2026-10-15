@@ -1,0 +1,21 @@
+
+  MAPBOX / RELEASE
+  TEST · simulated release
+  v0.2.0 · example/mapbox-tui
+  ░░░░░░░░░░░░░░░  0/9 steps complete
+  Elapsed 0s · esc cancel
+  ✗ 1  Preflight & exact-commit CI
+  ╰── ✗ authentication failed; run gh
+      auth login, then retry
+
+
+
+
+
+
+
+
+
+
+
+  Enter: retry this operation

@@ -1,0 +1,31 @@
+
+  MAPBOX / RELEASE
+  TEST · simulated release
+  v0.2.0 · example/mapbox-tui · 0123456789ab
+  ▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌░░░  8/9 steps complete
+
+  Elapsed 0s · esc cancel
+
+  ✓ 1  Preflight & exact-commit CI
+  ✓ 2  Checks & terminal interactions
+  ✓ 3  Package & verify locally
+  ✓ 4  Push release tag
+  ✓ 5  Wait for release workflow
+  ✓ 6  Verify draft attachments
+  ✓ 7  Test offline viewer
+  ✓ 8  Review release notes
+  ? 9  Publish on GitHub
+
+
+
+
+
+
+
+
+
+  Have you published v0.2.0 on GitHub? (simulated) [y/N]
+  Open the draft, review it, then click Publish release:
+  https://example.invalid/releases/v0.2.0
+  Enter defaults to no · Esc cancels
+  >

@@ -17,6 +17,145 @@ archives are not committed: `bin/` and `dist/` are ignored by Git. Pushing a ver
 tag makes Actions build that source and upload the archive and checksum as GitHub
 Release attachments. Publishing the draft makes those downloads available to users.
 
+## Interactive release command
+
+Use the Go version pinned in `go.mod`, on Linux x86-64, with Make, Python 3.11+,
+GitHub CLI and the terminal dependencies listed in [Development](DEVELOPMENT.md).
+Authenticate `gh` with permission to push tags and manage releases. From a clean
+checkout on `main`, run:
+
+```sh
+make release
+# Equivalent direct command:
+go run ./cmd/release
+```
+
+This is the official maintainer workflow. It fetches origin without overwriting
+tags and fast-forwards `main`. If that updates the checkout, it asks you to rerun
+so the release tool is rebuilt from the selected source. It then inspects
+local/remote tags and GitHub releases.
+The initial screen suggests the next available version; edit it before starting.
+Only one patch, minor or major increment from the highest published stable release
+is accepted, with lower components reset. Existing tags and drafts reserve their
+versions. For a repository with no stable releases, the initial version is `v0.1.0`.
+
+The nine sections run the actual checks and commands:
+
+1. Verify tools, clean source, release history and successful CI for the exact commit.
+2. Run `make check` and `make interactions` with `NO_COLOR` unset for interactions.
+3. Run `make package`, verify the checksum and archive contents, then check the
+   extracted binary's version, commit and offline rendering.
+4. Ask for `y`, recheck source and version availability, create an annotated tag
+   and push only that tag. Existing tags are never moved or overwritten.
+5. Find the release workflow for that tag and commit, then wait for its jobs.
+6. Inspect the draft (archive at most 256 MiB; checksum at most 4 KiB),
+   download attachments into a fresh directory, and verify
+   the checksum and archive. Extraction is cancellable and limited to 256 MiB total,
+   with at most 1 MiB per documentation file. Before any execution, compare every file's contents and permissions
+   with the verified local archive, then check embedded metadata and offline
+   rendering again. Packaging normalises Go flags, experiments, CPU baseline and workspace settings,
+   ignoring persistent user Go configuration and automatic VCS metadata (the
+   explicit version and commit remain embedded). Local and CI builds must use the same
+   pinned Go toolchain; a content mismatch stops execution and publication.
+7. Open the downloaded binary with the local fixture and `--no-provider`.
+   Quit the viewer to return, then type `y` to confirm it worked.
+8. Review the generated notes. Press `e` to edit, Ctrl+S to save, or Escape to
+   discard edits. Type `y` to accept the notes. Empty notes stay in this step so
+   you can correct them with `e`.
+9. Save the accepted notes to the draft and show its GitHub link. Open the link,
+   review the release in GitHub, then click **Publish release**. Return to the tool
+   and type `y` to verify publication, notes, attachments and latest status.
+   The tool never publishes automatically. If it is still a draft, publish it on
+   GitHub and press Enter to retry. Leave a newer stable release marked as latest.
+
+The checklist expands only the active section, showing nested command output and
+a braille spinner. Successful sections collapse to one green summary line, and
+upcoming sections stay hidden. New output stays in view automatically. Polling updates the same waiting leaf, with bounded retries and
+backoff. Completed section headings turn green. The cyan/pink bar counts completed
+sections, rather than estimating how long a server request will take. The output
+under each operation retains its latest twelve lines. Arrow/page keys and the
+mouse wheel scroll overflowing content; advancing a section brings it into view.
+Confirmation prompts use `[y/N]`: enter `y` to proceed. Empty input or `n`
+keeps the current step waiting; Escape cancels.
+
+Version entry and confirmation prompts stay pinned at the bottom while the
+checklist and full release notes scroll above. Enter submits the visible input. `NO_COLOR=1` disables colour. Short terminals show only the active step and its prompt, without a fixed
+minimum-size requirement.
+
+Escape or Ctrl+C cancels local commands and restores the terminal. It does not
+cancel an already-triggered GitHub workflow. Recovery state is locked and written
+atomically in the Git directory, without credentials. Resume from the same clean
+source checkout with:
+
+```sh
+make release RELEASE_ARGS='--resume'
+```
+
+Live preflight requires repository write access for the active `gh` account.
+
+Resume repeats verification and confirmations, reconciles an uncertain tag push
+or publication, and downloads fresh attachments. If a workflow rerun failed after
+creating a release, resume can inspect the matching release and continue through
+full artifact verification. It does not recreate a draft or
+move a tag. A changed source commit requires a new release version. Keep the
+saved source checked out while resuming; a newer `main` on origin is accepted only
+when the already-tagged source remains its ancestor. If GitHub reports altered
+attachments, restart with `--resume` and review them again before publication.
+
+### Interactive tests and local rehearsal
+
+There is one command and one workflow. To exercise its UI without credentials,
+subprocesses or network access, explicitly select its fixture-backed test mode:
+
+```sh
+make release RELEASE_ARGS='--mode=test'
+make release RELEASE_ARGS='--mode=test --scenario=delayed-workflow --delay=200ms'
+```
+
+The test mode uses the same steps, confirmations, version policy, asynchronous
+result handling and rendering. Repository and commit values are fictional. It
+substitutes deterministic operation results, including the viewer handoff and
+publication. Scenarios are `success`, `slow-checks`, `delayed-workflow`,
+`failed-checks`, `auth-error`, `checksum-mismatch`, `existing-draft` and
+`existing-tag`. Enter retries a failed fixture. `--version` seeds the editable tag;
+`--delay` controls fixture timing. There is no separate release-demo command or target.
+
+To run real local checks, packaging and the offline viewer without creating a tag
+or publishing, use a clean checkout and authenticated GitHub access:
+
+```sh
+make release RELEASE_ARGS='--mode=rehearsal'
+```
+
+Rehearsal reads repository/release metadata and fetches refs, but does not advance
+your branch. It explicitly skips remote CI as a publication gate, tag push,
+release workflow, draft download, notes and publication. It cannot be used as
+proof that those skipped stages passed.
+
+### Automated verification
+
+```sh
+make test
+make release-interactions
+```
+
+The tests exercise the production adapter using a strict fake command runner,
+including exact Git/GitHub arguments, confirmation ordering, archive verification,
+rehearsal restrictions and recovery after lost mutation responses. They also cover
+process cancellation, recovery-file locking, version guards, shared session
+transitions and normal/narrow text snapshots. The tests never push a real tag or
+publish a release.
+
+The interaction suite executes the same release command in test mode inside tmux.
+One happy path runs all nine sections, including delayed workflow discovery,
+version input, confirmations and notes editing. One failure path checks the error,
+retry and cancellation. Collapsed output, a six-row confirmation prompt and terminal restoration are
+checked within those two runs. It needs the terminal dependencies
+from [Development](DEVELOPMENT.md). Text, SVG and PNG captures are saved under
+`reports/generated/release/` and retained by CI. To intentionally update text
+snapshots, run `UPDATE_RELEASE_SNAPSHOTS=1 go test ./internal/release` and review
+the diff. The manual commands below remain useful for diagnosis and recovery.
+
 ## Choose a version
 
 Start with `v0.1.0`. Use `vMAJOR.MINOR.PATCH` tags, with no version file to edit.
