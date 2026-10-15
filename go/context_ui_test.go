@@ -672,3 +672,58 @@ func TestFilesKeysAfterLeavingJourneyMapPick(t *testing.T) {
 		t.Fatal("stale journey picking state captured Files navigation")
 	}
 }
+
+func TestContextSummaryShowsBuildVersion(t *testing.T) {
+	original := version
+	t.Cleanup(func() { version = original })
+	for _, build := range []string{"dev", "v0.1.0", "v0.1.0-rc.1", "v0.1.0-" + strings.Repeat("long", 20)} {
+		version = build
+		for _, width := range []int{30, 39, 40, 59, 60, 70, 109, 110, 120, 160} {
+			t.Run(fmt.Sprintf("%s/%d", build, width), func(t *testing.T) {
+				m := themeViewer(t, width, 40, false)
+				rows := m.contextSummaryRows()
+				_, first, _ := m.contextSummary()
+				if width < 60 && !strings.Contains(ansi.Strip(rows[1]), first) {
+					t.Fatalf("build version displaced context fact %q: %q", first, ansi.Strip(rows[1]))
+				}
+				text := ansi.Strip(strings.Join(rows, "\n"))
+				if len(build) <= 10 && !strings.Contains(text, build) {
+					t.Fatalf("missing build version %q: %s", build, text)
+				}
+				for _, hint := range []string{"ctrl+b sidebar", "/ search", "? help"} {
+					if !strings.Contains(text, hint) {
+						t.Fatalf("missing hint %q: %s", hint, text)
+					}
+				}
+				for _, row := range rows {
+					if ansi.StringWidth(row) > width {
+						t.Fatalf("row exceeds width %d: %q", width, ansi.Strip(row))
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestWideContextSummaryKeepsInspectedCoordinates(t *testing.T) {
+	original := version
+	t.Cleanup(func() { version = original })
+	version = "v0.1.0-" + strings.Repeat("long", 20)
+	for _, width := range []int{110, 120, 160} {
+		t.Run(fmt.Sprint(width), func(t *testing.T) {
+			m := themeViewer(t, width, 40, false)
+			m.inspected = &XY{X: -179.12345, Y: -89.12345}
+			rows := m.contextSummaryRows()
+			text := ansi.Strip(strings.Join(rows, "\n"))
+			_, latitude, longitude := m.contextSummary()
+			for _, want := range []string{latitude, longitude, "v0.1.0-", "ctrl+b sidebar", "/ search", "? help"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("missing %q at width %d: %s", want, width, text)
+				}
+			}
+			if len(rows) != 1 || ansi.StringWidth(rows[0]) > width {
+				t.Fatalf("summary exceeds its row: %q", text)
+			}
+		})
+	}
+}

@@ -140,6 +140,10 @@ func (m *viewer) contextSummaryRows() []string {
 	theme := "Theme: " + m.theme().Name
 	if m.width < 60 {
 		theme = ansi.Truncate(m.theme().Name, m.width-6, "…")
+		// Keep the leading context fact visible even with a long build label.
+		factsRoom := min(ansi.StringWidth(first), m.width/2)
+		buildVersion := ansi.Truncate(version, min(24, m.width-factsRoom-2), "…")
+		facts = pad(facts, m.width-ansi.StringWidth(buildVersion)-2) + "  " + buildVersion
 		room := m.width - ansi.StringWidth(theme) - 2
 		title := m.styles.heading.Render(pad(ansi.Truncate(name, room, "…"), room)) +
 			"  " + m.styles.muted.Render(theme)
@@ -149,8 +153,15 @@ func (m *viewer) contextSummaryRows() []string {
 			m.styles.muted.Render(pad(hints, m.width)),
 		}
 	}
-	themeRoom := min(24, m.width-ansi.StringWidth(hints+separator))
-	hints += separator + ansi.Truncate(theme, themeRoom, "…")
+	hintsRoom := m.width
+	if m.width >= 110 {
+		// Reserve the facts, four name cells and the two gaps on the shared row.
+		hintsRoom -= ansi.StringWidth(facts) + 9
+	}
+	versionRoom := min(24, max(0, hintsRoom-ansi.StringWidth(hints+separator+separator)-2))
+	versionLabel := separator + ansi.Truncate(version, versionRoom, "…")
+	themeRoom := min(24, hintsRoom-ansi.StringWidth(hints+separator+versionLabel))
+	hints += separator + ansi.Truncate(theme, max(0, themeRoom), "…") + versionLabel
 	if m.width < 110 {
 		// Split the line on small screens; hints must never be clipped by a long name.
 		room := max(4, m.width-ansi.StringWidth(facts)-3)
