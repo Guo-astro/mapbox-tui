@@ -174,13 +174,15 @@ func (r *RealAdapter) execute(ctx context.Context, q Request, emit func(string))
 	case ReadNotes:
 		var release *githubRelease
 		release, err = r.requireRelease(ctx, state)
-		if err == nil && state.PublishIntent && !release.Draft && release.Body != state.Notes {
-			err = fmt.Errorf("public release notes differ from the reviewed notes; inspect the release before continuing")
-		}
 		if err == nil {
 			result.State.Notes = release.Body
+			result.State.NotesPublic = !release.Draft
+			result.State.URL = release.URL
 		}
 		result.Message = "Release notes loaded; review or edit before publication"
+		if result.State.NotesPublic {
+			result.Message = "Published notes loaded; review and accept to continue verification"
+		}
 	case PreparePublication, PublishRelease:
 		return r.publish(ctx, q)
 	default:
@@ -774,10 +776,13 @@ func (r *RealAdapter) download(ctx context.Context, state State) (State, error) 
 }
 func (r *RealAdapter) publish(ctx context.Context, q Request) (Result, error) {
 	state := q.State
-	if q.Operation == PublishRelease {
-		state.PublishIntent = true
-	}
+	state.PublishIntent = true
 	result := Result{State: state}
+	// The maintainer may publish in GitHub before preparation starts. Persist
+	// intent before lookup so both error recovery and resume can inspect it.
+	if err := r.Journal.Save(state); err != nil {
+		return result, fmt.Errorf("save publication intent: %w", err)
+	}
 	release, err := r.requireRelease(ctx, state)
 	if err != nil {
 		return result, err
@@ -798,12 +803,7 @@ func (r *RealAdapter) publish(ctx context.Context, q Request) (Result, error) {
 	if release.Draft && q.Operation == PublishRelease {
 		return result, fmt.Errorf("release is still a draft; open %s and click Publish release, then retry", release.URL)
 	}
-	if q.Operation == PreparePublication && release.Draft && release.Body != state.Notes {
-		state.PublishIntent = true
-		if err = r.Journal.Save(state); err != nil {
-			return result, err
-		}
-		result.State = state
+	if q.Operation == PreparePublication && release.Draft && !sameReleaseNotes(release.Body, state.Notes) {
 		dir, err := r.freshDirectory("mapbox-release-notes-")
 		if err != nil {
 			return result, err
@@ -819,12 +819,15 @@ func (r *RealAdapter) publish(ctx context.Context, q Request) (Result, error) {
 		}
 	}
 	if q.Operation == PreparePublication {
-		state.PublishIntent = true
 		state.URL = release.URL
-		if !release.Draft && release.Body != state.Notes {
-			return result, fmt.Errorf("public release notes differ from the reviewed notes; inspect %s", release.URL)
+		if !release.Draft && !sameReleaseNotes(release.Body, state.Notes) {
+			return result, &publicNotesChangedError{URL: release.URL}
 		}
-		return Result{State: state, Message: "Review and publish the release on GitHub: " + state.URL}, nil
+		message := "Review and publish the release on GitHub: " + state.URL
+		if !release.Draft {
+			message = "Release is already public; verify publication on GitHub: " + state.URL
+		}
+		return Result{State: state, Message: message}, nil
 	}
 	releases, err := r.releases(ctx, state)
 	if err != nil {
@@ -842,8 +845,8 @@ func (r *RealAdapter) publish(ctx context.Context, q Request) (Result, error) {
 			if item.Name != state.Version {
 				return result, fmt.Errorf("release is public but its title differs from the selected version; inspect %s before continuing", item.URL)
 			}
-			if item.Body != state.Notes {
-				return result, fmt.Errorf("release is public but its notes differ from the reviewed notes; inspect %s before continuing", item.URL)
+			if !sameReleaseNotes(item.Body, state.Notes) {
+				return result, &publicNotesChangedError{URL: item.URL}
 			}
 			public = true
 			state.URL = item.URL
@@ -890,4 +893,10 @@ func assetIdentity(release *githubRelease) string {
 	}
 	slices.Sort(assets)
 	return fmt.Sprintf("%d:%x", release.ID, sha256.Sum256([]byte(strings.Join(assets, "\n"))))
+}
+
+// GitHub's web editor can convert LF to CRLF without changing the Markdown.
+// Preserve all other whitespace, including Markdown hard line breaks.
+func sameReleaseNotes(a, b string) bool {
+	return strings.ReplaceAll(a, "\r\n", "\n") == strings.ReplaceAll(b, "\r\n", "\n")
 }
