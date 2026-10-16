@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"fmt"
+	"image"
 	"image/color"
 	"path/filepath"
 	"slices"
@@ -35,6 +36,9 @@ const (
 	dialogMapbox
 	dialogMapboxHelp
 	dialogSearch
+	dialogFavourites
+	dialogFavouriteName
+	dialogFavouriteDelete
 	dialogJourney
 	dialogJourneyLocation
 	dialogJourneyRouting
@@ -59,6 +63,7 @@ type uiState struct {
 	filesSelected  int
 	filesVisited   bool
 	notice         string
+	feedback       string
 }
 
 type dialogFrame struct {
@@ -69,9 +74,22 @@ type dialogFrame struct {
 	searchCharLimit             int
 	searchPlaceholder           string
 	searchValue, notice, action string
+	feedback                    string
 	page                        pager.Model
 	picker                      *filepicker.Model
 	journey                     *journeyDialogFrame
+	favouriteEdit               *favouritesUI
+	placeSearch                 *placeSearchDialogFrame
+}
+
+type placeSearchDialogFrame struct {
+	resumeSearch    bool
+	client          *placeClient
+	query, session  string
+	sessionStarted  time.Time
+	sessionRequests int
+	suggestions     []placeSuggestion
+	result          int
 }
 
 type journeyDialogFrame struct {
@@ -332,6 +350,7 @@ func (m *viewer) closeDialog() {
 	m.ui.search.Blur()
 	m.ui.inputID = ""
 	m.ui.notice = ""
+	m.ui.feedback = ""
 
 	if wasPlanner {
 		m.layout()
@@ -359,6 +378,7 @@ func (m *viewer) openDialog(kind dialogKind) tea.Cmd {
 	m.ui.selected = 0
 	m.ui.menuNavigated = false
 	m.ui.notice = ""
+	m.ui.feedback = ""
 	m.dragging, m.rotating = false, false
 	m.dirty = true
 	m.ui.page.GotoTop()
@@ -366,6 +386,16 @@ func (m *viewer) openDialog(kind dialogKind) tea.Cmd {
 		m.layout()
 	}
 	switch kind {
+	case dialogFavourites, dialogFavouriteName:
+		m.ui.inputID = rand.Text()
+		m.ui.search.CharLimit = 256
+		m.ui.search.Placeholder = "Name"
+		m.ui.search.SetValue("")
+		if kind == dialogFavourites {
+			m.ui.search.Placeholder = "Find a favourite…"
+			m.loadFavourites()
+		}
+		return m.ui.search.Focus()
 	case dialogCommands, dialogSearch:
 		m.ui.inputID = rand.Text()
 		m.ui.search.CharLimit = 80
@@ -426,9 +456,25 @@ func (m *viewer) pushDialog(kind dialogKind) tea.Cmd {
 			searchCharLimit:   m.ui.search.CharLimit,
 			searchPlaceholder: m.ui.search.Placeholder,
 			notice:            m.ui.notice,
+			feedback:          m.ui.feedback,
 			page:              m.ui.page,
 			collapsed:         m.planner.collapsed,
 			filesCollapsed:    m.ui.filesCollapsed,
+		}
+		if m.ui.dialog == dialogFavouriteName || m.ui.dialog == dialogFavouriteDelete {
+			edit := m.favourites
+			frame.favouriteEdit = &edit
+		}
+		if m.placeSearchOpen() {
+			frame.placeSearch = &placeSearchDialogFrame{
+				resumeSearch: m.planner.searchPending,
+				client:       m.places, query: m.planner.query, session: m.planner.session,
+				sessionStarted: m.planner.sessionStarted, sessionRequests: m.planner.sessionRequests,
+				suggestions: slices.Clone(m.planner.suggestions), result: m.planner.result,
+			}
+			if m.planner.savingFavourite {
+				frame.feedback = ""
+			}
 		}
 		if m.journeyPanelOpen() {
 			frame.journey = &journeyDialogFrame{
@@ -448,6 +494,14 @@ func (m *viewer) pushDialog(kind dialogKind) tea.Cmd {
 			frame.action = actions[min(frame.selected, len(actions)-1)].action
 		}
 		parents = append(parents, frame)
+	}
+	if kind == dialogFavourites {
+		// Visiting favourites stays lookup-free, including through Commands.
+		for i := range parents {
+			if parents[i].placeSearch != nil {
+				parents[i].placeSearch.resumeSearch = false
+			}
+		}
 	}
 	command := m.openDialog(kind)
 	m.ui.parents = parents
@@ -469,6 +523,7 @@ func (m *viewer) backDialog() tea.Cmd {
 	m.ui.parents = parents
 	m.ui.selected, m.ui.menuNavigated = frame.selected, frame.menuNavigated
 	m.ui.notice, m.ui.page = frame.notice, frame.page
+	m.ui.feedback = frame.feedback
 	m.ui.page.Style = m.styles.dialogText
 	m.planner.collapsed = frame.collapsed
 	m.ui.filesCollapsed = frame.filesCollapsed
@@ -479,11 +534,15 @@ func (m *viewer) backDialog() tea.Cmd {
 		m.planner.addingWaypoint = frame.journey.addingWaypoint
 		m.planner.pickingStop = frame.journey.pickingStop
 	}
+	if frame.favouriteEdit != nil {
+		m.favourites.pending = frame.favouriteEdit.pending
+		m.favourites.expected = frame.favouriteEdit.expected
+	}
 	if frame.kind == dialogThemes {
 		m.applyTheme(frame.selected)
 	}
 	placeSearch := m.placeSearchOpen()
-	if frame.kind == dialogCommands || placeSearch {
+	if m.textDialogOpen() {
 		m.ui.search.CharLimit = frame.searchCharLimit
 		m.ui.search.Placeholder = frame.searchPlaceholder
 		m.ui.search.SetValue(frame.searchValue)
@@ -492,10 +551,30 @@ func (m *viewer) backDialog() tea.Cmd {
 	if placeSearch {
 		m.ui.inputID = rand.Text()
 		m.ui.search.Blur()
-		if !m.planner.collapsed && !m.planner.pickingStop {
-			command = tea.Batch(command, m.ui.search.Focus(), m.schedulePlaceSearch())
-		}
 		m.ui.notice = frame.notice
+		if saved := frame.placeSearch; saved != nil {
+			m.planner.query = saved.query
+			validSession := saved.session != "" && time.Since(saved.sessionStarted) < 170*time.Second
+			if saved.client == m.places && validSession {
+				m.planner.session = saved.session
+				m.planner.sessionStarted, m.planner.sessionRequests = saved.sessionStarted, saved.sessionRequests
+				m.planner.suggestions, m.planner.result = saved.suggestions, saved.result
+			} else {
+				m.planner.session = ""
+				m.planner.sessionStarted, m.planner.sessionRequests = time.Time{}, 0
+				if len(saved.suggestions) > 0 && m.places.token != "" {
+					m.ui.notice = "Search session changed or expired; ctrl+s to refresh"
+				}
+			}
+		}
+		if !m.planner.collapsed && !m.planner.pickingStop {
+			var search tea.Cmd
+			if frame.placeSearch == nil || frame.placeSearch.resumeSearch {
+				search = m.schedulePlaceSearch()
+				m.ui.notice = frame.notice
+			}
+			command = tea.Batch(command, m.ui.search.Focus(), search)
+		}
 	}
 	if frame.picker != nil {
 		m.ui.picker = *frame.picker
@@ -516,17 +595,22 @@ func (m *viewer) backDialog() tea.Cmd {
 }
 
 func (m *viewer) dialogHints(hints string) string {
-	if len(m.ui.parents) == 0 {
+	if len(m.ui.parents) == 0 || m.ui.dialog == dialogFavouriteDelete {
 		return hints
 	}
-	before, _, _ := strings.Cut(hints, "esc ")
-	return "esc back / " + strings.TrimRight(before, " /·")
+	lines := strings.Split(hints, "\n")
+	last := len(lines) - 1
+	before, _, _ := strings.Cut(lines[last], "esc ")
+	lines[last] = "esc back / " + strings.TrimRight(before, " /·")
+	return strings.Join(lines, "\n")
 }
 
 func (m *viewer) commands() []viewerCommand {
 	commands := []viewerCommand{
 		{title: "Keyboard shortcuts", shortcut: "?", action: "help"},
 		{title: "Quick place search", shortcut: "/", action: "search"},
+		{title: "Favourite places", action: "favourites"},
+		{title: "Save selected location as favourite", action: "save-favourite", disabled: m.inspected == nil},
 		{title: "Open track file", shortcut: "ctrl+o", action: "open"},
 		{title: "Loaded files and routes", shortcut: "ctrl+l", action: "workspace"},
 		{title: "Journey Planner", shortcut: "ctrl+j", action: "journey"},
@@ -594,6 +678,10 @@ func (m *viewer) runCommand(action string) tea.Cmd {
 		return command
 	}
 	switch action {
+	case "favourites":
+		return m.pushDialog(dialogFavourites)
+	case "save-favourite":
+		return m.saveFavouritePrompt()
 	case "search":
 		return m.pushDialog(dialogSearch)
 	case "workspace":
@@ -665,6 +753,9 @@ func (m *viewer) toggleMenuOption(action string) tea.Cmd {
 
 func (m *viewer) updateDialog(msg tea.Msg) tea.Cmd {
 	m.dirty = true
+	if m.favouritesDialogOpen() {
+		return m.updateFavouritesDialog(msg)
+	}
 	if m.ui.dialog == dialogSearch {
 		if pressed, ok := msg.(tea.KeyPressMsg); ok {
 			return m.updatePlaceLocation(pressed.String(), msg)
@@ -779,6 +870,8 @@ func (m *viewer) updateDialog(msg tea.Msg) tea.Cmd {
 func (m *viewer) dialogContent(width, height int) (string, string, string) {
 	s := m.styles
 	switch m.ui.dialog {
+	case dialogFavourites, dialogFavouriteName, dialogFavouriteDelete:
+		return m.favouritesContent(width, height)
 	case dialogSearch:
 		body, hints := m.placeSearchContent(width, height)
 		return "Quick search", body, hints
@@ -934,7 +1027,28 @@ func (m *viewer) sourceCreditsContent(sources sourceView) string {
 	return content.String()
 }
 
+// Keep success/progress feedback in the footer, leaving errors beside the input.
+func (m *viewer) dialogFooter(hints string, width int) []string {
+	lines := strings.Split(hints, "\n")
+	for i, line := range lines {
+		lines[i] = m.styles.dialogMuted.Render(ansi.Truncate(line, width, "…"))
+	}
+	if m.ui.feedback == "" {
+		return lines
+	}
+	feedback := ansi.Truncate(m.ui.feedback, width, "…")
+	feedbackWidth := ansi.StringWidth(feedback)
+	last := len(lines) - 1
+	gap := width - ansi.StringWidth(lines[last]) - feedbackWidth
+	if gap >= 2 {
+		lines[last] += strings.Repeat(" ", gap) + m.styles.dialogAccent.Render(feedback)
+		return lines
+	}
+	return append(lines, strings.Repeat(" ", width-feedbackWidth)+m.styles.dialogAccent.Render(feedback))
+}
+
 func (m *viewer) overlay() {
+	m.favourites.deleteButtons = [2]image.Rectangle{}
 	dialogOpen := m.ui.dialog != dialogNone
 	hasRoom := m.width >= 30 && m.height >= 12
 	if !dialogOpen || !hasRoom || m.journeyPanelOpen() || m.ui.dialog == dialogWorkspace {
@@ -944,7 +1058,7 @@ func (m *viewer) overlay() {
 	if m.ui.dialog == dialogSpeed || m.ui.dialog == dialogThemes {
 		width = min(38, m.width-8)
 	}
-	if m.ui.dialog == dialogMapbox {
+	if m.ui.dialog == dialogMapbox || m.ui.dialog == dialogFavouriteDelete {
 		width = min(52, m.width-8)
 	}
 	height := max(1, min(17, m.height-10, m.height-8))
@@ -954,6 +1068,14 @@ func (m *viewer) overlay() {
 	if m.ui.dialog == dialogMapbox {
 		height = min(height, 8)
 	}
+	if m.ui.dialog == dialogFavouriteDelete {
+		height = min(6, m.height-8)
+	}
+	compactSearchNotice := m.placeSearchOpen() && height == 2 && m.ui.notice != "" && len(m.planner.suggestions) > 0
+	if compactSearchNotice {
+		// Use the footer spacer for feedback, keeping the input and selection visible.
+		height++
+	}
 	contentHeight := height
 	if m.ui.notice != "" {
 		contentHeight--
@@ -962,8 +1084,17 @@ func (m *viewer) overlay() {
 	hints = m.dialogHints(hints)
 	t, s := m.theme(), m.styles
 	surface := lipgloss.Color(t.Surface)
+	hintLines := m.dialogFooter(hints, width)
+	if extra := max(0, len(hintLines)-2); extra > 0 {
+		height = max(1, height-extra)
+		contentHeight = max(1, contentHeight-extra)
+		title, body, _ = m.dialogContent(width, contentHeight)
+	}
 	if m.ui.notice != "" {
 		body = s.dialogMuted.Render(ansi.Truncate(m.ui.notice, width, "…")) + "\n" + body
+	}
+	if m.ui.dialog == dialogFavouriteDelete {
+		height = lipgloss.Height(body)
 	}
 	bodyStyle := lipgloss.NewStyle().
 		Background(surface).
@@ -971,8 +1102,11 @@ func (m *viewer) overlay() {
 		MaxWidth(width).
 		Height(height).
 		MaxHeight(height)
-	content := bodyStyle.Render(body) + "\n\n" +
-		s.dialogMuted.Render(ansi.Truncate(hints, width, "…"))
+	gap := "\n\n"
+	if m.ui.dialog != dialogFavouriteDelete && (len(hintLines) > 1 || compactSearchNotice) {
+		gap = "\n"
+	}
+	content := bodyStyle.Render(body) + gap + strings.Join(hintLines, "\n")
 	border := m.boxBorder()
 	box := t.borderStyle().
 		Width(width+6).
@@ -996,6 +1130,15 @@ func (m *viewer) overlay() {
 	}
 	x = max(0, min(m.width-boxWidth, x))
 	y = max(0, min(m.height-boxHeight, y))
+	if m.ui.dialog == dialogFavouriteDelete {
+		origin := image.Pt(x+3, y+2)
+		if m.ui.notice != "" {
+			origin.Y++
+		}
+		for i := range m.favourites.deleteButtons {
+			m.favourites.deleteButtons[i] = m.favourites.deleteButtons[i].Add(origin)
+		}
+	}
 	base := lipgloss.NewLayer(m.content)
 	canvas := lipgloss.NewCanvas(m.width, m.height).Compose(
 		lipgloss.NewCompositor(base, lipgloss.NewLayer(box).X(x).Y(y).Z(1)),
@@ -1009,7 +1152,7 @@ func (m *viewer) overlay() {
 		}
 	}
 	m.content = canvas.Render()
-	if m.ui.dialog == dialogCommands || m.placeSearchOpen() {
+	if m.textDialogOpen() {
 		if cursor := m.ui.search.Cursor(); cursor != nil {
 			cursor.X += max(0, x) + 3
 			cursor.Y += max(0, y) + 2
