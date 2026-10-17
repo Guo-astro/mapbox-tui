@@ -25,6 +25,7 @@ type pulse time.Time
 type viewerSettings struct {
 	ASCII, NoAnimation bool
 	Theme              int
+	Elevation          elevationMode
 }
 type viewer struct {
 	path                      string
@@ -33,6 +34,8 @@ type viewer struct {
 	workspace                 Workspace
 	pendingPaths              []string
 	startupCameraPending      bool
+	savedView                 *savedView
+	viewChanged               bool
 	startupJourneyRouting     bool
 	windowSizeKnown           bool
 	initialised               bool
@@ -53,8 +56,6 @@ type viewer struct {
 	fatal                     error
 	wheel                     wheelZoom
 	lastTick                  time.Time
-	showProfile               bool
-	profileExplicit           bool
 	profileHeight             int
 	progress                  *progress.Model
 	ui                        uiState
@@ -80,6 +81,8 @@ type viewer struct {
 	authMessage               string
 	authCLI                   mapboxDependencyStatus
 	preferences               appSettings
+	settingsNotice            string
+	themeNotice               string
 	connectionEcho            string
 	credential                renderingCredential
 	billingIntent             billingIntent
@@ -248,6 +251,13 @@ func (m *viewer) fetchAt(now time.Time) tea.Cmd {
 	return tea.Batch(commands...)
 }
 func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Only navigation from input marks the view for saving. Startup imports,
+	// layout changes and animation frames must not persist launch overrides.
+	switch msg.(type) {
+	case tea.KeyPressMsg, tea.MouseMsg:
+		before := m.destination()
+		defer m.recordViewChange(before)
+	}
 	switch v := msg.(type) {
 	case accountUsageResult:
 		if v.id == m.usageID {
@@ -322,7 +332,7 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.fetchAccountUsage()
 		}
 		m.preferences.Offline = preferences.Offline
-		m.preferences.BillingAccepted = preferences.BillingAccepted
+		m.preferences.BillingAcceptedVersion = preferences.BillingAcceptedVersion
 		return m, tea.Batch(m.discoverCredentials(true, false), m.fetchAccountUsage())
 	case searchClipboardResult:
 		if v.owner == "" || v.owner != m.ui.inputID || v.dialog != m.ui.dialog {
@@ -402,6 +412,7 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.selectionChanged()
 		a := Args{Aspect: m.args.Aspect}
+		startup := m.startupCameraPending
 		if m.startupCameraPending && len(m.pendingPaths) == 0 {
 			a = m.args
 			m.startupCameraPending = false
@@ -415,7 +426,13 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fatal = e
 			return m, tea.Quit
 		}
+		before := m.destination()
 		m.camera = c
+		if startup {
+			m.camera = m.restoreStartupView(c)
+		} else {
+			m.recordViewChange(before)
+		}
 		m.camera.Width, m.camera.Height = w, h
 		m.lastTick = time.Now()
 		m.lastMotionTick = m.lastTick
@@ -826,17 +843,15 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *viewer) layout() {
-	if !m.profileExplicit {
-		m.showProfile = m.workspace.hasVisibleElevation()
-	}
+	profileVisible := m.settings.Elevation != elevationHide && m.workspace.hasVisibleElevation()
 	w, h := mapSize(m.width, m.height)
 	if m.hasJourneyContext() {
 		h--
 	}
-	if len(m.workspace.items()) > 1 && m.showProfile {
+	if len(m.workspace.items()) > 1 && profileVisible {
 		h--
 	}
-	m.profileHeight = profileRows(h, m.showProfile && len(m.workspace.profileItems()) > 0)
+	m.profileHeight = profileRows(h, profileVisible)
 	m.camera.Width, m.camera.Height = max(1, w), max(1, h-m.profileHeight)
 	m.motion.Target.Width, m.motion.Target.Height = m.camera.Width, m.camera.Height
 }
@@ -860,6 +875,7 @@ func (m *viewer) advancePlayback(now time.Time) {
 		if pos := m.position(); pos != nil && m.following {
 			target := m.destination()
 			if followPosition(&target, pos.World) {
+				m.viewChanged = true
 				m.moveCamera(target)
 			}
 		}
@@ -1090,7 +1106,7 @@ func (m *viewer) rebuild() {
 		Render(strings.Join(mapRows, "\n"))
 	rows = append(rows, frame)
 	profile := m.visibleProfile()
-	if len(m.workspace.items()) > 1 && m.showProfile {
+	if len(m.workspace.items()) > 1 && m.profileHeight > 0 {
 		rows = append(rows, m.workspaceLegend(m.width, profile))
 	}
 
@@ -1241,5 +1257,8 @@ func openViewerFiles(paths []string, a Args) error {
 	if e != nil {
 		return e
 	}
-	return m.fatal
+	if m.fatal != nil {
+		return m.fatal
+	}
+	return m.saveViewOnExit()
 }

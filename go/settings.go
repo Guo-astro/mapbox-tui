@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,10 +11,54 @@ import (
 )
 
 type appSettings struct {
-	MapboxCLITelemetry bool `json:"mapbox_cli_telemetry"`
-	Traffic            bool `json:"traffic"`
-	BillingAccepted    int  `json:"mapbox_billing_accepted"`
-	Offline            bool `json:"offline"`
+	MapboxCLITelemetry     bool       `json:"mapbox_cli_telemetry"`
+	Traffic                bool       `json:"traffic"`
+	BillingAcceptedVersion int        `json:"mapbox_billing_accepted_version"`
+	Offline                bool       `json:"offline"`
+	Theme                  string     `json:"theme,omitempty"`
+	ASCII                  *bool      `json:"ascii,omitempty"`
+	CameraAnimation        *bool      `json:"camera_animation,omitempty"`
+	Elevation              string     `json:"elevation,omitempty"`
+	LastView               *savedView `json:"last_view,omitempty"`
+}
+
+// Legacy keys are read-only aliases. Writes use appSettings and emit only the
+// current names. Presence matters: an explicit new false/zero beats an old value.
+type settingsDocument struct {
+	appSettings
+	BillingVersion       *int               `json:"mapbox_billing_accepted_version"`
+	LegacyBillingVersion *int               `json:"mapbox_billing_accepted"`
+	LegacyNoAnimation    *bool              `json:"no_animation"`
+	View                 *savedViewDocument `json:"last_view"`
+}
+
+type savedViewDocument struct {
+	savedView
+	LegacyLon *float64 `json:"center_lon"`
+	LegacyLat *float64 `json:"center_lat"`
+}
+
+func (d settingsDocument) current() appSettings {
+	s := d.appSettings
+	if d.BillingVersion != nil {
+		s.BillingAcceptedVersion = *d.BillingVersion
+	} else if d.LegacyBillingVersion != nil {
+		s.BillingAcceptedVersion = *d.LegacyBillingVersion
+	}
+	if s.CameraAnimation == nil && d.LegacyNoAnimation != nil {
+		s.CameraAnimation = new(!*d.LegacyNoAnimation)
+	}
+	if d.View != nil {
+		view := d.View.savedView
+		if view.Lon == nil {
+			view.Lon = d.View.LegacyLon
+		}
+		if view.Lat == nil {
+			view.Lat = d.View.LegacyLat
+		}
+		s.LastView = &view
+	}
+	return s
 }
 
 func appSettingsPath() (string, error) {
@@ -45,13 +90,43 @@ func loadAppSettings() (appSettings, error) {
 	if closeErr != nil {
 		return settings, fmt.Errorf("close mapbox-tui settings: %w", closeErr)
 	}
-	if len(data) > 65536 || json.Unmarshal(data, &settings) != nil {
-		return settings, fmt.Errorf("invalid mapbox-tui settings at %q", path)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	// Reject incompatible schemas rather than dropping fields on the next save.
+	var decoded *settingsDocument
+	if len(data) > 65536 || decoder.Decode(&decoded) != nil || decoded == nil {
+		return appSettings{}, fmt.Errorf("invalid or incompatible mapbox-tui settings at %q", path)
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return appSettings{}, fmt.Errorf("invalid mapbox-tui settings at %q", path)
+	}
+	settings = decoded.current()
+	if err := settings.validate(); err != nil {
+		return appSettings{}, fmt.Errorf("invalid mapbox-tui settings at %q: %w", path, err)
 	}
 	return settings, nil
 }
 
+func (s appSettings) validate() error {
+	if s.LastView != nil {
+		if err := s.LastView.validate(); err != nil {
+			return fmt.Errorf("last_view: %w", err)
+		}
+	}
+	if _, err := parseElevationMode(s.Elevation); err != nil {
+		return err
+	}
+	if len(s.Theme) > 4096 || strings.ContainsAny(s.Theme, "\x00\r\n") {
+		return fmt.Errorf("theme must be a built-in ID or a path of at most 4096 bytes")
+	}
+	return nil
+}
+
+// Call through updateAppSettings for mutations; callers must hold the settings lock.
 func saveAppSettings(settings appSettings) error {
+	if err := settings.validate(); err != nil {
+		return err
+	}
 	path, err := appSettingsPath()
 	if err != nil {
 		return err
@@ -69,6 +144,9 @@ func saveAppSettings(settings appSettings) error {
 	}
 	defer os.Remove(file.Name())
 	_, writeErr := file.Write(append(data, '\n'))
+	if writeErr == nil {
+		writeErr = file.Sync()
+	}
 	closeErr := file.Close()
 	if writeErr != nil {
 		return fmt.Errorf("save mapbox-tui settings: %w", writeErr)

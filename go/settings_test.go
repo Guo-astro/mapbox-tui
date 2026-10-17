@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -9,6 +11,131 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 )
+
+func TestSettingsRenamedKeysPreserveValuesAndMigrateOnSave(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		fields    string
+		version   int
+		animation *bool
+	}{
+		{name: "absent"},
+		{name: "legacy enabled", fields: `,"mapbox_billing_accepted":1,"no_animation":false`,
+			version: 1, animation: new(true)},
+		{name: "legacy disabled", fields: `,"mapbox_billing_accepted":0,"no_animation":true`,
+			animation: new(false)},
+		{name: "current enabled", fields: `,"mapbox_billing_accepted_version":1,"camera_animation":true`,
+			version: 1, animation: new(true)},
+		{name: "current disabled", fields: `,"mapbox_billing_accepted_version":0,"camera_animation":false`,
+			animation: new(false)},
+		{name: "new false and zero win", fields: `,"mapbox_billing_accepted":1,"mapbox_billing_accepted_version":0,` +
+			`"no_animation":false,"camera_animation":false`, animation: new(false)},
+		{name: "new true and version win", fields: `,"mapbox_billing_accepted":0,"mapbox_billing_accepted_version":2,` +
+			`"no_animation":true,"camera_animation":true`, version: 2, animation: new(true)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			path, _ := appSettingsPath()
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			data := []byte(`{"traffic":true,"theme":"noir",` +
+				`"last_view":{"center_lon":10,"center_lat":20,"zoom":8}` + tc.fields + `}`)
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := loadAppSettings()
+			if err != nil || saved.BillingAcceptedVersion != tc.version {
+				t.Fatal("billing notice version changed while reading", saved, err)
+			}
+			if (saved.CameraAnimation == nil) != (tc.animation == nil) {
+				t.Fatal("animation presence changed while reading")
+			}
+			if tc.animation != nil && *saved.CameraAnimation != *tc.animation {
+				t.Fatal("animation value was inverted incorrectly")
+			}
+			m := preferenceViewer(t)
+			if tc.animation != nil && m.settings.NoAnimation == *tc.animation {
+				t.Fatal("viewer ignored the migrated animation preference")
+			}
+			if !bytes.Equal(data, settingsBytes(t)) {
+				t.Fatal("reading settings or launching the viewer rewrote the file")
+			}
+			if _, err := updateAppSettings(func(s *appSettings) { s.ASCII = new(true) }); err != nil {
+				t.Fatal(err)
+			}
+			var written map[string]json.RawMessage
+			if err := json.Unmarshal(settingsBytes(t), &written); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := written["mapbox_billing_accepted"]; exists {
+				t.Fatal("save retained the old billing key")
+			}
+			if _, exists := written["no_animation"]; exists {
+				t.Fatal("save retained the old animation key")
+			}
+			saved, err = loadAppSettings()
+			if err != nil || saved.BillingAcceptedVersion != tc.version || !saved.Traffic ||
+				saved.Theme != "noir" || saved.LastView == nil || *saved.LastView.Zoom != 8 {
+				t.Fatal("migration lost existing settings", saved, err)
+			}
+			if (saved.CameraAnimation == nil) != (tc.animation == nil) {
+				t.Fatal("save changed animation presence")
+			}
+			if tc.animation != nil && *saved.CameraAnimation != *tc.animation {
+				t.Fatal("save changed animation value")
+			}
+		})
+	}
+}
+
+func TestSavedViewCoordinateNamesMigrateOnSave(t *testing.T) {
+	for _, tc := range []struct {
+		name, view string
+		lon, lat   float64
+	}{
+		{name: "legacy", view: `{"zoom":8,"center_lat":20,"center_lon":10}`, lon: 10, lat: 20},
+		{name: "current", view: `{"zoom":8,"lat":20,"long":10}`, lon: 10, lat: 20},
+		{name: "mixed", view: `{"zoom":8,"lat":20,"center_lon":10}`, lon: 10, lat: 20},
+		{name: "new zero wins", view: `{"zoom":8,"lat":0,"long":0,"center_lat":20,"center_lon":10}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			path, _ := appSettingsPath()
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			original := []byte(`{"traffic":true,"last_view":` + tc.view + `}`)
+			if err := os.WriteFile(path, original, 0600); err != nil {
+				t.Fatal(err)
+			}
+			m := preferenceViewer(t)
+			if m.camera.Center != project(tc.lon, tc.lat) || m.camera.Zoom != 8 {
+				t.Fatal("saved view changed during migration", m.camera)
+			}
+			if !bytes.Equal(original, settingsBytes(t)) {
+				t.Fatal("reading the view rewrote settings")
+			}
+			if _, err := updateAppSettings(func(s *appSettings) { s.Theme = "noir" }); err != nil {
+				t.Fatal(err)
+			}
+			var written struct {
+				Traffic bool               `json:"traffic"`
+				View    map[string]float64 `json:"last_view"`
+			}
+			if err := json.Unmarshal(settingsBytes(t), &written); err != nil {
+				t.Fatal(err)
+			}
+			view := written.View
+			_, hasLat := view["lat"]
+			_, hasLong := view["long"]
+			if !written.Traffic || len(view) != 3 || !hasLat || !hasLong ||
+				view["zoom"] != 8 || view["lat"] != tc.lat || view["long"] != tc.lon {
+				t.Fatal("save lost coordinates or retained legacy keys", written)
+			}
+		})
+	}
+}
 
 func TestMapboxTelemetryPreferenceIsOptInAndPersistent(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -186,5 +313,99 @@ func TestBrokenTelemetrySettingsDoNotBlockMapboxCLI(t *testing.T) {
 	cli, status := checkMapboxCLI(t.Context())
 	if cli == nil || status.State != "ready" || cli.telemetry {
 		t.Fatal("broken optional settings blocked the CLI or enabled telemetry")
+	}
+}
+
+func TestInvalidSettingsAreNeverReplacedByViewerChanges(t *testing.T) {
+	for name, data := range map[string]string{
+		"malformed":         `{"traffic":true,`,
+		"oversized":         strings.Repeat(" ", 65537),
+		"incompatible":      `{"version":99,"ascii":true}`,
+		"unknown field":     `{"future_preference":true}`,
+		"null":              `null`,
+		"wrong type":        `{"ascii":"true"}`,
+		"invalid elevation": `{"elevation":"sometimes"}`,
+		"trailing data":     `{} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			path, err := appSettingsPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			m := preferenceViewer(t)
+			if m.settings.ASCII || m.settingsNotice == "" {
+				t.Fatal("invalid settings did not use defaults with feedback")
+			}
+			m.toggleMenuOption("ascii")
+			if !m.settings.ASCII || !strings.Contains(m.settingsNotice, "Preference not saved") {
+				t.Fatal("failed save did not leave viewer usable with feedback")
+			}
+			if string(settingsBytes(t)) != data {
+				t.Fatal("viewer replaced invalid settings")
+			}
+		})
+	}
+}
+
+func TestSettingsFailedWritesPreserveValidFile(t *testing.T) {
+	for _, failure := range []string{"validation", "unwritable directory", "unreadable file", "busy"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			if err := saveAppSettings(appSettings{Traffic: true}); err != nil {
+				t.Fatal(err)
+			}
+			before := settingsBytes(t)
+			path, _ := appSettingsPath()
+			// Create the lock before restricting the directory so failure occurs at replacement preparation.
+			if err := os.WriteFile(path+".lock", nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			var restore func()
+			switch failure {
+			case "unwritable directory", "unreadable file":
+				target, mode := filepath.Dir(path), os.FileMode(0500)
+				if failure == "unreadable file" {
+					target, mode = path, 0000
+				}
+				info, err := os.Stat(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(target, mode); err != nil {
+					t.Fatal(err)
+				}
+				restore = func() { _ = os.Chmod(target, info.Mode().Perm()) }
+				t.Cleanup(restore)
+			case "busy":
+				lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer lock.Close()
+				if err := lockLocalFile(lock); err != nil {
+					t.Fatal(err)
+				}
+				defer unlockLocalFile(lock)
+			}
+			_, err := updateAppSettings(func(s *appSettings) {
+				s.Traffic = false
+				if failure == "validation" {
+					s.Elevation = "invalid"
+				}
+			})
+			if restore != nil {
+				restore()
+			}
+			if err == nil || string(settingsBytes(t)) != string(before) {
+				t.Fatal("failed write lost previous valid settings", err)
+			}
+		})
 	}
 }

@@ -31,6 +31,27 @@ We use the same workspace model and scene renderer for the viewer, CLI and MCP.
 They live in one Go executable, so we don't have separate implementations of
 selection, playback or map layering to maintain.
 
+Viewer preferences live in `settings.json`, separate from `Workspace` and
+favourites. We apply defaults, saved choices, then explicit CLI flags. User actions
+save only the changed field. Theme previews and launch overrides don't save.
+CLI renders and MCP keep their own defaults.
+
+Elevation stores `auto`, `show` or `hide`; layout decides whether the visible data
+can produce a chart. Theme fallback warnings stay separate from save errors.
+Centre and zoom restore from `last_view` across startup imports and route results.
+Navigation marks the view for one synchronous save after a clean exit.
+`--reset-view` deletes it before the UI opens.
+
+Reads are capped at 64 KiB and reject unknown or invalid fields. Updates lock
+`settings.json.lock`, reread, merge the changed field, then sync and rename a
+same-directory temporary file. Busy or failed writes leave the previous file
+intact. Replacement is verified on Unix; native Windows remains unverified.
+
+We read legacy keys but write `mapbox_billing_accepted_version`, `camera_animation`
+and `last_view` with `zoom`, `lat`, `long`. These replace `mapbox_billing_accepted`,
+inverted `no_animation`, and `center_lat`/`center_lon`. Explicit new keys win,
+including zero and false. Reading alone doesn't migrate the file.
+
 Each front end has its own session. The viewer keeps a workspace while it's open,
 multi-file CLI rendering creates a temporary one, and MCP keeps one for the
 server process. Single-file CLI/MCP snapshots use the same renderer without

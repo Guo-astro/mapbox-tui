@@ -277,10 +277,20 @@ func (k shortcutMap) FullHelp() [][]key.Binding {
 }
 
 func (m *viewer) initUI() error {
-	preferences, err := loadAppSettings()
+	var preferences appSettings
+	var err error
+	if m.args.ResetView {
+		preferences, err = updateAppSettings(func(s *appSettings) { s.LastView = nil })
+		if err != nil {
+			return fmt.Errorf("could not reset saved view: %w", err)
+		}
+	} else {
+		preferences, err = loadAppSettings()
+	}
 	if err != nil {
 		preferences = appSettings{}
 		m.authMessage = "Could not load settings; telemetry is off and traffic is off: " + err.Error()
+		m.settingsNotice = "Settings unavailable; using defaults: " + err.Error()
 	}
 	m.preferences = preferences
 	if m.provider != nil {
@@ -302,12 +312,10 @@ func (m *viewer) initUI() error {
 	if m.directions == nil {
 		m.directions = newDirectionsClient(m.places.token)
 	}
-	themes, selected, err := loadThemes(m.args.Theme)
+	selected, err := m.initViewerPreferences(preferences)
 	if err != nil {
 		return err
 	}
-	m.themes = themes
-	m.settings = viewerSettings{ASCII: m.args.ASCII, NoAnimation: m.args.NoAnimation}
 	m.ui.help = help.New()
 	m.ui.details = pager.New()
 	m.ui.details.SoftWrap = true
@@ -648,7 +656,7 @@ func (m *viewer) commands() []viewerCommand {
 	}
 	if len(m.workspace.profileItems()) > 0 {
 		toggles = append(toggles, viewerCommand{
-			title: "Toggle elevation profiles", shortcut: "e", action: "profile", toggle: true, checked: m.showProfile,
+			title: "Toggle elevation profiles", shortcut: "e", action: "profile", toggle: true, checked: m.profileEnabled(),
 		})
 	}
 	if m.activeTrack() != nil {
@@ -748,15 +756,22 @@ func (m *viewer) toggleMenuOption(action string) tea.Cmd {
 		return m.toggleTraffic()
 	case "ascii":
 		m.settings.ASCII = !m.settings.ASCII
+		m.saveViewerPreference(func(s *appSettings) { s.ASCII = new(m.settings.ASCII) })
 	case "motion":
 		m.settings.NoAnimation = !m.settings.NoAnimation
+		m.saveViewerPreference(func(s *appSettings) { s.CameraAnimation = new(!m.settings.NoAnimation) })
 		if m.settings.NoAnimation {
 			m.camera = m.destination()
 			m.motion.Active = false
 		}
 	case "profile":
-		m.profileExplicit = true
-		m.showProfile = !m.showProfile
+		choice, mode := "hide", elevationHide
+		if !m.profileEnabled() {
+			choice = "show"
+			mode = elevationShow
+		}
+		m.settings.Elevation = mode
+		m.saveViewerPreference(func(s *appSettings) { s.Elevation = choice })
 		m.layout()
 	case "play":
 		m.advancePlayback(time.Now())
@@ -838,6 +853,7 @@ func (m *viewer) updateDialog(msg tea.Msg) tea.Cmd {
 				if m.ui.dialog == dialogThemes {
 					m.ui.themeBefore = m.ui.selected
 					m.applyTheme(m.ui.selected)
+					m.saveThemePreference()
 				} else if p := m.activePlayback(); p != nil {
 					m.advancePlayback(time.Now())
 					p.speed = m.ui.selected

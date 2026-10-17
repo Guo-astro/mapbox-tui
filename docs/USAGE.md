@@ -92,7 +92,7 @@ Elevation profiles appear automatically when any visible imported activity has
 recorded elevation, including files opened later. They stay hidden without
 elevation data and disappear when the last elevation-bearing activity is hidden
 or removed. Use `e` or the command palette to toggle them; your explicit choice
-lasts for the viewer session, including later loads and selection changes.
+is saved for future launches, loads and selection changes.
 Attribution stays in the footer.
 
 Menus wrap. Rounded modal borders contain the current title and a breadcrumb
@@ -102,6 +102,59 @@ unloading files or journeys. If a panel is open, the first Esc closes it; press
 Esc again to clear the location.
 Use `--ascii` if your terminal doesn't render Braille well. The minimum viewer
 size is 30 columns by 12 rows.
+
+## Saved viewer preferences
+
+We save theme, ASCII, animation, elevation and the last map view in `settings.json`.
+On Linux, that's `$XDG_CONFIG_HOME/mapbox-tui/settings.json`, or
+`~/.config/mapbox-tui/settings.json` if XDG isn't set. Other systems use Go's user
+configuration directory. Clearing a workspace keeps these choices. CLI renders
+and MCP don't use them.
+
+Explicit flags override saved choices for one launch, including `false`:
+
+```sh
+mapbox-tui --ascii=false --no-animation=false --theme=catppuccin --elevation=auto
+```
+
+Without saved choices, we use Catppuccin, Braille, animation and automatic elevation.
+
+- `a` saves ASCII mode; `m` saves animation. `camera_animation: true` enables it.
+- Enter confirms and saves a theme. Dismissing the picker restores the previous one.
+- `e` saves elevation as `show` or `hide`. `--elevation=auto` follows the loaded
+  data. Even `show` won't draw an empty chart.
+- After navigation, a clean exit saves `last_view` as `zoom`, `lat` and `long`.
+  Reopening restores it, even with a track or route. Explicit centre and zoom
+  flags win. We don't restore bearing, loaded files or routes.
+
+Saving one choice doesn't save unrelated launch overrides. Crashes don't save
+camera changes. With several viewers, the last successful camera save wins.
+
+To delete the saved centre and zoom, then start at the default view or fit a file:
+
+```sh
+mapbox-tui --reset-view
+mapbox-tui --reset-view fixtures/example.gpx
+```
+
+Reset removes `last_view` immediately. Explicit camera flags still apply; later
+navigation and a clean exit save a new view. If reset fails, startup stops with an error.
+
+To reset other viewer choices, close viewers and remove `theme`, `ascii`,
+`camera_animation` and `elevation` from the file. Removing `elevation` restores
+`auto`. Remove legacy `no_animation` too, if present. Deleting the whole file also
+resets traffic, telemetry, offline mode and billing acceptance, but keeps
+favourites and credentials.
+
+Older key names still work and migrate on the next save. The new names win if
+both exist, including `false` and `0`. `mapbox_billing_accepted_version` records
+which billing notice you've accepted. See [settings internals](ARCHITECTURE.md#shared-model-and-rendering)
+for the field mappings and write rules.
+
+Invalid or incompatible settings stay untouched; the viewer warns and uses
+defaults. Details are in Context (Ctrl-B). Repair or move the file before saving.
+An unavailable saved theme falls back to Catppuccin with a warning. Failed saves
+keep the previous file; exit-save errors appear after the terminal is restored.
 
 ## Loaded files and playback
 
