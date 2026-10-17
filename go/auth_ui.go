@@ -44,6 +44,13 @@ type viewerMapboxLogin struct {
 }
 
 func (m *viewer) connectionNotice() string {
+	access := m.preferences.productAccess(m.credential.token)
+	if access == mapboxOffline {
+		return "Offline maps · account usage checked at startup"
+	}
+	if access == mapboxNeedsConsent {
+		return "Mapbox online features paused · review billing in Mapbox settings"
+	}
 	if m.loading || m.authBusy {
 		return ""
 	}
@@ -96,10 +103,11 @@ func (m *viewer) discoverCredentialsWith(
 	ctx, cancel := context.WithCancel(m.ctx)
 	m.authCancel, m.authBusy = cancel, true
 	id := m.authID
+	preferences := m.preferences
 	return func() tea.Msg {
 		credential := resolveCredential(ctx)
 		var access authSection
-		if (afterLogin || checkConnection) && credential.token != "" {
+		if preferences.productAccess(credential.token) == mapboxAllowed && (afterLogin || checkConnection) {
 			access = probe(ctx, providerForCredential("mapbox", credential))
 		}
 		return credentialResult{
@@ -122,7 +130,9 @@ func (m *viewer) acceptCredentials(result credentialResult) tea.Cmd {
 		m.authCancel()
 		m.authCancel = nil
 	}
-	credential := result.credential
+	m.credential = result.credential
+	access := m.preferences.productAccess(m.credential.token)
+	credential := access.effectiveCredential(m.credential)
 	switch {
 	case credential.token == "":
 		m.setMapboxVerified(false)
@@ -140,10 +150,17 @@ func (m *viewer) acceptCredentials(result credentialResult) tea.Cmd {
 	if !m.args.ProviderSet {
 		kind = defaultProvider(credential.token)
 	}
+	if access == mapboxOffline || access == mapboxNeedsConsent {
+		kind = "none"
+	}
 	if credential.token != m.provider.token || kind != m.provider.Kind {
 		m.cancelPlaceSearch()
 		if credential.token != m.directions.token {
-			m.workspace.invalidateJourneyRoutes()
+			if credential.token == "" {
+				m.workspace.cancelJourneyRoutes()
+			} else {
+				m.workspace.invalidateJourneyRoutes()
+			}
 			m.directions = newDirectionsClient(credential.token)
 		}
 		m.provider = providerForCredential(kind, credential)
@@ -170,6 +187,10 @@ func (m *viewer) acceptCredentials(result credentialResult) tea.Cmd {
 			m.configureTraffic()
 		}
 		switch {
+		case access == mapboxOffline:
+			m.authMessage = "You're offline. Choose 'Go online' to use Mapbox."
+		case access == mapboxNeedsConsent:
+			m.authMessage = access.guidance()
 		case credential.token == "":
 			m.authMessage = "Check failed: " + credential.guidance
 		case result.access.State != "ready":
@@ -223,10 +244,16 @@ func (m *viewer) acceptCredentials(result credentialResult) tea.Cmd {
 	if m.placeSearchOpen() && m.places.token != "" {
 		search = m.schedulePlaceSearch()
 	}
+	if access == mapboxNeedsConsent {
+		m.openBilling(billingEnableOnline)
+	}
 	return tea.Batch(m.fetch(), routing, search)
 }
 
 func (m *viewer) beginMapboxLogin() tea.Cmd {
+	if !m.preferences.billingAccepted() {
+		return m.openBilling(billingSignIn)
+	}
 	m.cancelPlaceSearch()
 	m.cancelAuth()
 	ctx, cancel := context.WithCancel(m.ctx)
@@ -258,11 +285,15 @@ func (m *viewer) checkMapboxSetup() tea.Cmd {
 }
 
 func (m *viewer) mapboxConnected() bool {
-	return m.provider != nil && m.provider.token != ""
+	return m.credential.token != "" || (m.provider != nil && m.provider.token != "")
 }
 
 func (m *viewer) mapboxVerified() bool {
-	return m.mapboxConnected() && m.authVerified
+	token := m.credential.token
+	if token == "" && m.provider != nil {
+		token = m.provider.token
+	}
+	return m.preferences.productAccess(token) == mapboxAllowed && m.authVerified
 }
 
 func (m *viewer) setMapboxVerified(verified bool) {
@@ -275,40 +306,42 @@ func (m *viewer) setMapboxVerified(verified bool) {
 
 func (m *viewer) mapboxActions() []viewerCommand {
 	telemetryDisabled := mapboxTelemetryOptOut()
-	telemetryAction := viewerCommand{
-		title: "CLI telemetry", action: "telemetry", toggle: true, disabled: telemetryDisabled,
-		checked: m.preferences.MapboxCLITelemetry && !telemetryDisabled,
+	actions := []viewerCommand{
+		{title: "View usage on Mapbox", action: "usage-web"},
+		{title: "Usage details", action: "usage"},
 	}
-	creditsAction := viewerCommand{title: "Map credits", shortcut: "v", action: "credits"}
-	continueAction := viewerCommand{title: "Continue offline", action: "continue"}
-	if m.mapboxConnected() {
-		continueAction.title = "Continue viewing"
+	if m.preferences.Offline || !m.preferences.billingAccepted() {
+		actions = append(actions, viewerCommand{title: "Go online", action: "online"})
+	} else {
+		actions = append(actions, viewerCommand{title: "Go offline", action: "offline"})
 	}
-	if m.authBusy {
-		return []viewerCommand{
-			{title: "Installation help", action: "install"},
-			telemetryAction,
-			creditsAction,
-			continueAction,
+	if !m.authBusy {
+		first := viewerCommand{title: "Check again", action: "check"}
+		if m.authCLI.State == "ready" {
+			first = viewerCommand{title: "Sign in to Mapbox", action: "login"}
+			if m.mapboxConnected() {
+				first = viewerCommand{title: "Check connection", action: "check"}
+			}
 		}
+		actions = append(actions, first)
 	}
-	first := viewerCommand{title: "Check again", action: "check"}
-	if m.authCLI.State == "ready" {
-		first = viewerCommand{title: "Sign in to Mapbox", action: "login"}
-		if m.mapboxConnected() {
-			first = viewerCommand{title: "Check connection", action: "check"}
-		}
-		return []viewerCommand{first, {title: "Installation help", action: "install"}, telemetryAction, creditsAction,
-			continueAction}
-	}
-	return []viewerCommand{{title: "Installation help", action: "install"}, first, telemetryAction, creditsAction,
-		continueAction}
+	return append(actions,
+		viewerCommand{title: "Billing guidance", action: "billing"},
+		viewerCommand{title: "Installation help", action: "install"},
+		viewerCommand{title: "CLI telemetry", action: "telemetry", toggle: true, disabled: telemetryDisabled,
+			checked: m.preferences.MapboxCLITelemetry && !telemetryDisabled},
+		viewerCommand{title: "Map credits", shortcut: "v", action: "credits"},
+	)
 }
 
 func (m *viewer) updateMapboxDialog(key string) tea.Cmd {
 	actions := m.mapboxActions()
 	m.ui.selected = min(m.ui.selected, len(actions)-1)
 	switch key {
+	case "home":
+		m.ui.selected = 0
+	case "end":
+		m.ui.selected = len(actions) - 1
 	case "v":
 		return m.openMapboxCredits()
 	case "up", "k":
@@ -322,9 +355,19 @@ func (m *viewer) updateMapboxDialog(key string) tea.Cmd {
 			return nil
 		}
 		switch actions[m.ui.selected].action {
-		case "continue":
-			m.cancelAuth()
-			m.closeDialog()
+		case "usage-web":
+			return openMapboxLink(mapboxUsageURL)
+		case "usage":
+			return m.pushDialog(dialogMapboxUsage)
+		case "billing":
+			return m.openBilling(billingShowGuidance)
+		case "online":
+			if !m.preferences.billingAccepted() {
+				return m.openBilling(billingEnableOnline)
+			}
+			return m.setMapboxOffline(false)
+		case "offline":
+			return m.setMapboxOffline(true)
 		case "install":
 			return m.pushDialog(dialogMapboxHelp)
 		case "check":
@@ -338,13 +381,14 @@ func (m *viewer) updateMapboxDialog(key string) tea.Cmd {
 				m.authMessage = "Telemetry disabled by MAPBOX_CLI_NO_TELEMETRY"
 				return nil
 			}
-			preferences := m.preferences
-			preferences.MapboxCLITelemetry = !preferences.MapboxCLITelemetry
-			if err := saveAppSettings(preferences); err != nil {
+			preferences, err := updateAppSettings(func(settings *appSettings) {
+				settings.MapboxCLITelemetry = !m.preferences.MapboxCLITelemetry
+			})
+			if err != nil {
 				m.authMessage = "Could not save telemetry setting: " + err.Error()
 				return nil
 			}
-			m.preferences = preferences
+			m.preferences.MapboxCLITelemetry = preferences.MapboxCLITelemetry
 			m.authMessage = "Mapbox CLI telemetry disabled"
 			if preferences.MapboxCLITelemetry {
 				m.authMessage = "Opted in to Mapbox CLI telemetry"
@@ -364,24 +408,24 @@ func (m *viewer) mapboxDialogContent(width, height int) (string, string, string)
 	showMessage := m.authMessage != "" && m.authMessage != m.authCLI.Guidance
 	feedbackRows := 0
 	if showMessage && height > 1 {
-		feedbackRows = 1
+		feedbackRows = min(2, height-1)
 	}
-	if height > len(actions)+2+feedbackRows {
-		state := "not installed"
-		switch {
-		case m.authBusy:
-			state = "checking…"
-		case m.authCLI.State == "ready":
-			state = "ready"
-		case m.authCLI.State == "unavailable":
-			state = "needs repair/update"
-		}
+	if height >= 7 {
 		connection := "Mapbox: not connected"
 		if m.mapboxConnected() {
 			connection = "Mapbox: connected"
 		}
-		rows = append(rows, m.styles.dialogHeading.Render(connection),
-			m.styles.dialogMuted.Render("CLI: "+state), m.styles.dialogHeading.Render("Actions"))
+		if m.preferences.Offline {
+			connection += " · offline"
+		}
+		rows = append(rows, m.styles.dialogHeading.Render(ansi.Truncate(connection, width, "…")))
+		for _, row := range m.usageSummary() {
+			if len(rows) >= height-4-feedbackRows {
+				break
+			}
+			rows = append(rows, m.styles.dialogMuted.Render(ansi.Truncate(row, width, "…")))
+		}
+		rows = append(rows, "")
 	}
 	count := max(1, height-len(rows)-feedbackRows)
 	selected := min(m.ui.selected, len(actions)-1)
@@ -396,7 +440,11 @@ func (m *viewer) mapboxDialogContent(width, height int) (string, string, string)
 		if actions[i].disabled {
 			style = style.Foreground(m.styles.dialogMuted.GetForeground())
 		}
-		rows = append(rows, style.Render(pad(ansi.Truncate(text, width, "…"), width)))
+		text = ansi.Truncate(text, width, "…")
+		if actions[i].action == "usage-web" {
+			text = terminalHyperlink(text, mapboxUsageURL)
+		}
+		rows = append(rows, style.Render(pad(text, width)))
 	}
 	if showMessage && height > len(rows) {
 		if height > len(rows)+1 {

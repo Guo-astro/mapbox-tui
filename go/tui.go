@@ -81,22 +81,30 @@ type viewer struct {
 	authCLI                   mapboxDependencyStatus
 	preferences               appSettings
 	connectionEcho            string
+	credential                renderingCredential
+	billingIntent             billingIntent
+	usage                     usageReport
+	usageID                   uint64
+	usageCancel               context.CancelFunc
 }
 
 func tick() tea.Cmd {
 	return tea.Tick(16*time.Millisecond, func(t time.Time) tea.Msg { return pulse(t) })
 }
 func (m *viewer) Init() tea.Cmd {
+	usage := m.fetchAccountUsage()
 	var credentials tea.Cmd
 	_, explicit := environmentCredential()
 	if !explicit {
 		credentials = m.discoverCredentials(false, false)
+	} else if m.preferences.productAccess(m.credential.token) == mapboxNeedsConsent {
+		m.openBilling(billingEnableOnline)
 	}
 	if m.path == "" {
 		navigation := m.freeRoam()
-		return tea.Batch(tick(), navigation, credentials, m.startJourneyFromArgs())
+		return tea.Batch(tick(), navigation, credentials, usage, m.startJourneyFromArgs())
 	}
-	return tea.Batch(tick(), m.load(m.path), credentials)
+	return tea.Batch(tick(), m.load(m.path), credentials, usage)
 }
 func (m *viewer) freeRoam() tea.Cmd {
 	m.loadID++
@@ -241,6 +249,18 @@ func (m *viewer) fetchAt(now time.Time) tea.Cmd {
 }
 func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
+	case accountUsageResult:
+		if v.id == m.usageID {
+			m.usage = v.report
+			m.dirty = true
+		}
+		return m, nil
+	case mapboxLinkResult:
+		if v.err != nil {
+			m.ui.notice = "Could not open browser; visit " + v.url
+			m.dirty = true
+		}
+		return m, nil
 	case mapboxDependencyResult:
 		if v.id != m.authID {
 			return m, nil
@@ -295,7 +315,15 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dirty = true
 			return m, nil
 		}
-		return m, m.discoverCredentials(true, false)
+		preferences, err := saveMapboxOffline(false)
+		if err != nil {
+			m.authMessage = "Login succeeded; could not save online mode: " + err.Error()
+			m.dirty = true
+			return m, m.fetchAccountUsage()
+		}
+		m.preferences.Offline = preferences.Offline
+		m.preferences.BillingAccepted = preferences.BillingAccepted
+		return m, tea.Batch(m.discoverCredentials(true, false), m.fetchAccountUsage())
 	case searchClipboardResult:
 		if v.owner == "" || v.owner != m.ui.inputID || v.dialog != m.ui.dialog {
 			return m, nil
@@ -1186,6 +1214,7 @@ func openViewerFiles(paths []string, a Args) error {
 	m := &viewer{
 		args:         a,
 		provider:     p,
+		credential:   credential,
 		ctx:          ctx,
 		camera:       c,
 		width:        120,
@@ -1204,6 +1233,7 @@ func openViewerFiles(paths []string, a Args) error {
 	defer m.cancelPlaceSearch()
 	defer m.workspace.cancelJourneyRoutes()
 	defer m.cancelAuth()
+	defer m.cancelAccountUsage()
 	_, e = tea.NewProgram(m).Run()
 	if m.connectionEcho != "" {
 		fmt.Println(m.connectionEcho)

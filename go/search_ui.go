@@ -34,6 +34,7 @@ func (m *viewer) applyPlaceLocation(location placeLocation) tea.Cmd {
 
 func (m *viewer) placeSearchContent(width, height int) (string, string) {
 	s := m.styles
+	access := m.preferences.productAccess(m.credential.token)
 	m.ui.search.SetWidth(max(1, width-2))
 	rows := []string{m.ui.search.View()}
 	hints := "enter choose / click map / esc"
@@ -49,7 +50,13 @@ func (m *viewer) placeSearchContent(width, height int) (string, string) {
 		status := "Mapbox search · type a place"
 		style := s.dialogAccent
 		if m.places.token == "" {
-			status = "Mapbox search [disabled: not connected]"
+			status = "Place search unavailable: not connected"
+			if access == mapboxOffline {
+				status = "Place search unavailable while offline"
+			}
+			if access == mapboxNeedsConsent {
+				status = "Place search paused: review billing risks"
+			}
 			style = s.dialogMuted
 		}
 		if m.planner.searchBusy {
@@ -59,6 +66,19 @@ func (m *viewer) placeSearchContent(width, height int) (string, string) {
 			}
 		}
 		rows = append(rows, style.Render(pad(status, width)))
+		if m.places.token == "" && height > 3 {
+			rows = append(rows, s.dialogMuted.Render(pad("Enter latitude, longitude coordinates", width)))
+			if height > 4 {
+				guidance := "Connect Mapbox in Mapbox settings"
+				if access == mapboxOffline {
+					guidance = "Go online in Mapbox settings"
+				}
+				if access == mapboxNeedsConsent {
+					guidance = "Review billing risks in Mapbox settings"
+				}
+				rows = append(rows, s.dialogMuted.Render(pad(guidance, width)))
+			}
+		}
 	}
 	if height > 3 {
 		hints = "ctrl+f favourites / alt+s toggle\n" + hints
