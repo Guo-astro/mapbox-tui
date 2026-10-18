@@ -278,3 +278,78 @@ func TestViewerStalePreferencesPreserveUnrelatedUpdates(t *testing.T) {
 		t.Fatal("stale viewer overwrote unrelated preferences", saved, err)
 	}
 }
+
+func TestSafeStartBypassesPreferencesWithoutWriting(t *testing.T) {
+	for _, contents := range []string{
+		"{invalid",
+		`{"ascii":true,"theme":"missing-theme","last_view":{"zoom":12,"lat":51,"long":0}}`,
+	} {
+		t.Run(contents, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			path, err := appSettingsPath()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+			m := preferenceViewer(t, "--safe-start")
+			if m.savedView != nil || m.settings.ASCII || m.preferenceNotice() != "" {
+				t.Fatal("safe start read saved preferences")
+			}
+			m.viewChanged = true
+			if err := m.saveViewOnExit(); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(settingsBytes(t), []byte(contents)) {
+				t.Fatal("safe start rewrote preferences")
+			}
+			override := preferenceViewer(t, "--safe-start", "--ascii", "--zoom", "5")
+			if !override.settings.ASCII || override.camera.Zoom != 5 {
+				t.Fatal("safe start ignored explicit flags")
+			}
+			if _, err := parseCLI([]string{"--safe-start", "--reset-view"}, io.Discard); err == nil {
+				t.Fatal("safe start allowed destructive reset flag")
+			}
+		})
+	}
+}
+
+func TestSafeStartMapboxHelpersIgnoreSavedTelemetry(t *testing.T) {
+	fakeMapbox(t, "safe-start")
+	t.Setenv("MAPBOX_ACCESS_TOKEN", "")
+	t.Setenv("MapboxAccessToken", "")
+	for _, name := range []string{"MAPBOX_ACCESS_TOKEN", "MapboxAccessToken"} {
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("MAPBOX_CLI_NO_TELEMETRY", "")
+	if err := saveAppSettings(appSettings{MapboxCLITelemetry: true}); err != nil {
+		t.Fatal(err)
+	}
+	before := settingsBytes(t)
+	m := preferenceViewer(t, "--safe-start")
+	credential := m.discoverCredentials(false, false)().(credentialResult)
+	if credential.credential.token == "" {
+		t.Fatal("safe-start credential discovery failed", credential.credential.guidance)
+	}
+	usage := m.fetchAccountUsage()().(accountUsageResult)
+	if usage.report.State != "available" {
+		t.Fatal("safe-start usage failed", usage.report.Guidance)
+	}
+	setup := m.checkMapboxSetup()().(mapboxDependencyResult)
+	if setup.status.State != "ready" {
+		t.Fatal("safe-start dependency check failed", setup.status)
+	}
+	cli, err := findMapboxCLIWithTelemetry(t.Context(), m.mapboxTelemetryOverride())
+	if err != nil || cli.telemetry {
+		t.Fatal("safe-start login helper enabled saved telemetry", err)
+	}
+	if !bytes.Equal(before, settingsBytes(t)) {
+		t.Fatal("helper discovery rewrote preferences")
+	}
+}
