@@ -336,6 +336,7 @@ The `offline` option plots straight lines. `manual` remains a compatibility alia
 These are interactive viewer options; offline geometry works locally, while routed
 modes use your normal Mapbox connection. Named-place search remains available
 inside the planner; startup arguments accept resolved coordinates.
+
 CLI journeys in Driving, Cycling or Walking mode calculate automatically once
 Mapbox is available, even if you switch the planner to another journey while
 connecting. Offline mode keeps straight lines; failed requests wait for an explicit retry.
@@ -412,3 +413,18 @@ checkpoint is not silently recreated. Unsupported formats, oversized files and
 failed writes leave existing saves intact. Clearing the working workspace or
 `--reset-view` does not delete checkpoints, preferences or favourites. Automatic
 recovery and a searchable save library are separate features.
+
+## Live viewer control
+
+Start a named viewer, then run control commands from another terminal:
+
+```sh
+mapbox-tui --name main
+mapbox-tui session list --json
+mapbox-tui remote --session main status --json
+```
+
+Every live session has a UUID; names are optional aliases. Use `--no-control`
+to disable discovery and control. MCP agents discover sessions with
+`viewer_sessions` and pass a UUID as `session_id` to viewer tools.
+See [remote access](REMOTE_ACCESS.md) for CLI commands, MCP setup and retry rules.
