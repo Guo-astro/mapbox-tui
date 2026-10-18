@@ -28,6 +28,7 @@ type viewerSettings struct {
 	Elevation          elevationMode
 }
 type viewer struct {
+	savedWork                 savedWorkspaceUI
 	path                      string
 	args                      Args
 	settings                  viewerSettings
@@ -36,7 +37,7 @@ type viewer struct {
 	startupCameraPending      bool
 	savedView                 *savedView
 	viewChanged               bool
-	startupJourneyRouting     bool
+	viewRestoreID             uint64
 	windowSizeKnown           bool
 	initialised               bool
 	provider                  *Provider
@@ -103,6 +104,9 @@ func (m *viewer) Init() tea.Cmd {
 	} else if m.preferences.productAccess(m.credential.token) == mapboxNeedsConsent {
 		m.openBilling(billingEnableOnline)
 	}
+	if m.args.WorkspacePath != "" {
+		return tea.Batch(tick(), m.fetch(), credentials, usage, m.routePendingJourneys())
+	}
 	if m.path == "" {
 		navigation := m.freeRoam()
 		return tea.Batch(tick(), navigation, credentials, usage, m.startJourneyFromArgs())
@@ -126,6 +130,8 @@ func (m *viewer) freeRoam() tea.Cmd {
 	return m.fetch()
 }
 func (m *viewer) clearWorkspace() tea.Cmd {
+	m.savedWork.request++
+	m.cancelPlaceSearch()
 	m.workspace.clear()
 	m.path = ""
 	return m.freeRoam()
@@ -256,9 +262,21 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case tea.KeyPressMsg, tea.MouseMsg:
 		before := m.destination()
-		defer m.recordViewChange(before)
+		restoreID := m.viewRestoreID
+		defer func() {
+			// Confirming a checkpoint restores a view; it is not map navigation.
+			if restoreID == m.viewRestoreID {
+				m.recordViewChange(before)
+			}
+		}()
 	}
 	switch v := msg.(type) {
+	case workspaceLibraryReady:
+		return m, m.acceptWorkspaceLibrary(v)
+	case savedWorkspaceReady:
+		return m, m.acceptSavedWorkspace(v)
+	case savedImportReady:
+		return m, m.acceptSavedImport(v)
 	case accountUsageResult:
 		if v.id == m.usageID {
 			m.usage = v.report
@@ -368,7 +386,7 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.layout()
-		if v.err == nil {
+		if v.err == nil && !v.preserveView {
 			m.fitPlannerJourney(v.ref)
 		}
 		m.dirty = true
@@ -1071,6 +1089,9 @@ func (m *viewer) details() []string {
 	return lines
 }
 func (m *viewer) rebuild() {
+	// The native textinput cursor uses the absolute character index, ignoring
+	// horizontal scrolling. Workspace paths need the rendered, scroll-aware cursor.
+	m.ui.search.SetVirtualCursor(m.ui.dialog == dialogSavedWorkspace)
 	m.cursor = nil
 	if m.width < 30 || m.height < 12 {
 		m.content = "Enlarge terminal to 30×12; q quits"
@@ -1243,6 +1264,19 @@ func openViewerFiles(paths []string, a Args) error {
 	}
 	if err := m.initUI(); err != nil {
 		return err
+	}
+	if a.WorkspacePath != "" {
+		candidate, camera, err := prepareWorkspace(a.WorkspacePath)
+		if err != nil {
+			return err
+		}
+		m.workspace.replace(candidate)
+		m.planner.ref = m.workspace.restoredPlannerRef()
+		m.camera = workspaceLaunchCamera(camera, a)
+		m.initialised = true
+		if len(m.workspace.unresolved) > 0 {
+			m.openSavedWorkspaceDialog("repair")
+		}
 	}
 	m.layout()
 	defer m.sources.close()
