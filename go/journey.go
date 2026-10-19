@@ -11,6 +11,8 @@ import (
 	"unicode"
 )
 
+const maxJourneyStops = 5000
+
 var coordinateNumberPrefix = regexp.MustCompile(`^[+-]?(([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]*)?|\.)?$`)
 
 type placeLocation struct {
@@ -82,6 +84,81 @@ func (w *Workspace) createJourney() ItemRef {
 	return ItemRef{DocumentID: entry.id, ItemID: item.ID}
 }
 
+// Create only after validation, so a rejected plan cannot consume an identity.
+func (w *Workspace) createJourneyWithLocations(locations []placeLocation, mode journeyMode) (ItemRef, error) {
+	stops, err := journeyStopsFromLocations(locations, 0)
+	if err != nil {
+		return ItemRef{}, err
+	}
+	return w.createJourneyFromIntent(journeyIntent{Stops: stops, Mode: mode})
+}
+
+func (w *Workspace) createJourneyFromIntent(intent journeyIntent) (ItemRef, error) {
+	intent, track, err := prepareInitialJourney(intent)
+	if err != nil {
+		return ItemRef{}, err
+	}
+	ref := w.createJourney()
+	w.applyInitialJourney(ref, intent, track)
+	return ref, nil
+}
+
+func (w *Workspace) initializeJourney(ref ItemRef, locations []placeLocation, mode journeyMode) error {
+	if _, err := w.journey(ref); err != nil {
+		return err
+	}
+	stops, err := journeyStopsFromLocations(locations, 0)
+	if err != nil {
+		return err
+	}
+	intent, track, err := prepareInitialJourney(journeyIntent{Stops: stops, Mode: mode})
+	if err != nil {
+		return err
+	}
+	w.applyInitialJourney(ref, intent, track)
+	return nil
+}
+
+func prepareInitialJourney(intent journeyIntent) (journeyIntent, *Track, error) {
+	if intent.Mode != journeyManual && intent.Mode.limitKM() == 0 {
+		return journeyIntent{}, nil, fmt.Errorf("unknown journey routing mode")
+	}
+	if err := validateJourneyStopCount(len(intent.Stops)); err != nil {
+		return journeyIntent{}, nil, err
+	}
+	stops := make([]journeyStop, len(intent.Stops))
+	for i, stop := range intent.Stops {
+		stops[i].ID = i + 1
+		if stop.Location != nil {
+			location := *stop.Location
+			stops[i].Location = &location
+		}
+	}
+	track, err := journeyTrack(stops)
+	return journeyIntent{Stops: stops, Mode: intent.Mode}, track, err
+}
+
+func (w *Workspace) applyInitialJourney(ref ItemRef, intent journeyIntent, track *Track) {
+	j, _ := w.journey(ref)
+	j.Stops, j.Mode = intent.Stops, intent.Mode
+	j.nextID, j.modeChosen = len(intent.Stops), true
+	j.history = nil
+	j.automaticRoutePending = false
+	j.invalidateRoute()
+	w.replaceJourneyTrack(ref, track)
+}
+
+func journeyStopsFromLocations(locations []placeLocation, nextID int) ([]journeyStop, error) {
+	if err := validateJourneyStopCount(len(locations)); err != nil {
+		return nil, err
+	}
+	stops := make([]journeyStop, len(locations))
+	for i, location := range locations {
+		stops[i] = journeyStop{ID: nextID + i + 1, Location: &location}
+	}
+	return stops, nil
+}
+
 func (w *Workspace) journey(ref ItemRef) (*Journey, error) {
 	entry, i, err := w.lookup(ref)
 	if err != nil {
@@ -95,6 +172,18 @@ func (w *Workspace) journey(ref ItemRef) (*Journey, error) {
 
 func (w *Workspace) editJourney(ref ItemRef, stops []journeyStop) error {
 	j, err := w.journey(ref)
+	if err != nil {
+		return err
+	}
+	return w.editJourneyIntent(ref, journeyIntent{Stops: stops, Mode: j.Mode})
+}
+
+func (w *Workspace) replaceJourneyLocations(ref ItemRef, locations []placeLocation) error {
+	j, err := w.journey(ref)
+	if err != nil {
+		return err
+	}
+	stops, err := journeyStopsFromLocations(locations, j.nextID)
 	if err != nil {
 		return err
 	}
@@ -117,6 +206,9 @@ func (w *Workspace) editJourneyIntent(ref ItemRef, intent journeyIntent) error {
 		j.history = slices.Delete(j.history, 0, 1)
 	}
 	j.Stops = slices.Clone(stops)
+	for _, stop := range stops {
+		j.nextID = max(j.nextID, stop.ID)
+	}
 	j.Mode = intent.Mode
 	j.invalidateRoute()
 	w.replaceJourneyTrack(ref, track)
@@ -185,8 +277,24 @@ func (w *Workspace) addJourneyWaypoint(ref ItemRef) error {
 	if err != nil {
 		return err
 	}
-	j.nextID++
-	stops := slices.Insert(slices.Clone(j.Stops), len(j.Stops)-1, journeyStop{ID: j.nextID})
+	return w.insertJourneyWaypoint(ref, j.Stops[len(j.Stops)-2].ID, nil)
+}
+
+func (w *Workspace) insertJourneyWaypoint(ref ItemRef, after int, location *placeLocation) error {
+	j, err := w.journey(ref)
+	if err != nil {
+		return err
+	}
+	index := slices.IndexFunc(j.Stops, func(stop journeyStop) bool { return stop.ID == after })
+	if index < 0 || index == len(j.Stops)-1 {
+		return fmt.Errorf("after must identify a stop before the destination")
+	}
+	if location != nil {
+		owned := *location
+		location = &owned
+	}
+	stop := journeyStop{ID: j.nextID + 1, Location: location}
+	stops := slices.Insert(slices.Clone(j.Stops), index+1, stop)
 	return w.editJourney(ref, stops)
 }
 
@@ -253,7 +361,20 @@ func (w *Workspace) undoJourney(ref ItemRef) error {
 	return nil
 }
 
+func validateJourneyStopCount(count int) error {
+	if count < 2 {
+		return fmt.Errorf("at least two stops are required")
+	}
+	if count > maxJourneyStops {
+		return fmt.Errorf("at most %d stops are supported", maxJourneyStops)
+	}
+	return nil
+}
+
 func journeyTrack(stops []journeyStop) (*Track, error) {
+	if err := validateJourneyStopCount(len(stops)); err != nil {
+		return nil, err
+	}
 	t := &Track{Name: "Planned journey"}
 	segment := -1
 	for i, stop := range stops {

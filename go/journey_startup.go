@@ -15,6 +15,9 @@ func parseStartupJourney(start, end string, waypoints []string, mode string) (*s
 	if start == "" || end == "" {
 		return nil, fmt.Errorf("a startup journey requires both --start and --end as latitude,longitude")
 	}
+	if err := validateJourneyStopCount(len(waypoints) + 2); err != nil {
+		return nil, err
+	}
 	j := &startupJourney{Mode: journeyMode(mode)}
 	switch mode {
 	case "offline", "manual":
@@ -50,21 +53,11 @@ func (m *viewer) startJourneyFromArgs() tea.Cmd {
 	if billingOpen {
 		defer m.openBilling(billingIntent)
 	}
-	j, err := m.workspace.journey(m.planner.ref)
-	if err != nil {
+	if err := m.workspace.initializeJourney(m.planner.ref, initial.Locations, initial.Mode); err != nil {
 		m.ui.notice = err.Error()
 		return nil
 	}
-	stops := make([]journeyStop, len(initial.Locations))
-	for i, location := range initial.Locations {
-		stops[i] = journeyStop{ID: i + 1, Location: &location}
-	}
-	if err := m.workspace.editJourneyIntent(m.planner.ref, journeyIntent{Stops: stops, Mode: initial.Mode}); err != nil {
-		m.ui.notice = err.Error()
-		return nil
-	}
-	j.nextID, j.modeChosen = len(stops), true
-	j.history = nil
+	j, _ := m.workspace.journey(m.planner.ref)
 	if m.workspace.selection == nil {
 		_ = m.workspace.selectItem(m.planner.ref)
 	}

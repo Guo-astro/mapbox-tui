@@ -76,6 +76,17 @@ active recording alone. Human and agent playback commands use the same workspace
 setters and revision tracking. Animation uses a shared viewer setter; only UI
 changes save the preference.
 
+Workspace journey operations own initial stop identities, chosen mode and undo
+history, as well as replacement and waypoint insertion. Initializing a plan leaves
+no empty draft to undo. Successful edits allocate stop IDs monotonically, including
+after undo; rejected edits preserve the plan and its routing state. Viewer, startup
+and live-control callers choose selection, camera and routing presentation separately.
+Saved journeys use the same initialization, including incomplete drafts; restoration
+then applies saved appearance, identity and automatic-routing choices.
+The shared model enforces 2–5,000 stops per journey, including unset draft stops.
+Provider routing separately accepts at most 25 stops; returned path coordinates
+are not planning stops.
+
 CLI and MCP validate arguments against the same embedded JSON schemas. Edits
 advance the live revision; replacing or clearing the working copy changes its
 generation. Saved checkpoints have separate revisions for storage conflicts.
@@ -91,6 +102,10 @@ We load GPX, FIT, TCX and KML into a common document model with named items and
 geometry. During import, we project the coordinates and calculate bounds and
 measurements. Moving the camera doesn't require another file read. Disconnected
 segments stay separate, so we don't draw paths across gaps in a recording.
+Each imported item (track, route, activity or KML placemark) accepts at most
+100,000 coordinates across its segments and attached waypoints. Parsers reject
+the whole import when an item exceeds the cap, without thinning or truncation.
+Independent items have independent caps; this is not a workspace memory budget.
 
 The workspace manages which items are loaded, visible and selected, along with
 recorded playback. The camera determines how we view them. These rules don't
@@ -121,7 +136,7 @@ uses these operations for explicit Save/Open and `--workspace`; ordinary CLI ren
 and standalone MCP still start with their own state and never restore a checkpoint
 implicitly. Their shared scene renderer remains ANSI-free outside the viewer.
 
-Version 1 accepts at most 4 MiB, 1,024 documents and 1,000 stops per journey.
+Version 1 accepts at most 4 MiB, 1,024 documents and 5,000 stops per journey.
 Unknown fields, unsupported versions and invalid identities/state are rejected.
 There are no older supported versions to migrate. Imports carry SHA-256 fingerprints
 of their original bytes; parsing checks fingerprints before and after reading.
