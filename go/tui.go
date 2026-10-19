@@ -288,6 +288,8 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.handleControl(v), m.waitControl())
 	case controlWorkspaceReady:
 		return m, m.acceptControlWorkspace(v)
+	case controlWorkspaceSaveStart:
+		return m, m.startControlWorkspaceSave(v)
 	case controlLoaded:
 		return m, m.acceptControlLoad(v)
 	case workspaceLibraryReady:
@@ -509,6 +511,7 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dirty = true
 		}
 		m.reconcileOperations()
+		m.updateControlActivity(time.Now())
 		command := m.fetchAt(now)
 		if !m.sources.busy() && !m.loading {
 			m.ui.spinning = false
@@ -773,6 +776,21 @@ func (m *viewer) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		mouse := v.Mouse()
 		m.advancePlayback(time.Now())
 		x, y := mouse.X, mouse.Y
+		label, left := m.controlActivityRow(y)
+		overActivity := label != "" && x >= left && x < m.width-2
+		if overActivity {
+			switch v.(type) {
+			case tea.MouseReleaseMsg:
+				m.dragging, m.rotating = false, false
+				return m, nil
+			case tea.MouseMotionMsg:
+				if !m.dragging && !m.rotating {
+					return m, nil
+				}
+			default:
+				return m, nil
+			}
+		}
 		if click, ok := v.(tea.MouseClickMsg); ok && click.Button == tea.MouseLeft {
 			panelInput := m.ui.dialog == dialogNone || m.ui.dialog == dialogWorkspace || m.journeyPanelOpen()
 			if panelInput {
@@ -1255,6 +1273,7 @@ func (m *viewer) rebuild() {
 	m.overlayFilesPanel()
 	m.overlayJourneyPanel()
 	m.overlay()
+	m.overlayControlActivity()
 }
 func (m *viewer) View() tea.View {
 	v := tea.NewView(m.content)

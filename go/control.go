@@ -28,11 +28,14 @@ type controlOperation struct {
 	routeRevision uint64
 	cancel        context.CancelFunc
 	transition    string
+	activitySeen  bool
+	saveReply     chan<- controlResponse
 }
 
 type viewerControl struct {
 	server     *sessionServer
 	operations map[string]*controlOperation
+	activity   controlActivity
 }
 
 type controlLoaded struct {
@@ -85,6 +88,12 @@ func (m *viewer) handleControl(msg controlMessage) tea.Cmd {
 		return nil
 	}
 	response, cmd := m.applyControl(msg.request)
+	m.receiveControlActivity(msg.request, response)
+	if msg.request.Action == "workspace.save" && response.State == "pending" && cmd != nil {
+		m.control.operations[msg.request.ID].saveReply = msg.reply
+		m.rebuild()
+		return cmd
+	}
 	msg.reply <- response
 	return cmd
 }
@@ -204,7 +213,8 @@ func (m *viewer) applyControl(request controlRequest) (controlResponse, tea.Cmd)
 		} else {
 			ordinary++
 		}
-		if op.response.State == "pending" && op.transition == "" {
+		if op.response.State == "pending" && op.transition == "" &&
+			op.request.Action != "workspace.save" {
 			pending++
 		}
 	}
@@ -436,7 +446,7 @@ func (m *viewer) executeControl(r controlRequest, a controlArgs, op *controlOper
 	case "workspace.open":
 		return m.beginControlWorkspaceOpen(r, a, op)
 	case "workspace.save":
-		return m.controlWorkspaceSave(r, a)
+		return m.beginControlWorkspaceSave(r, a)
 	case "load":
 		if !filepath.IsAbs(a.Path) {
 			err = fmt.Errorf("path must be absolute")
