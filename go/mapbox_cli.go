@@ -312,6 +312,13 @@ func (c *mapboxCLI) login(ctx context.Context, streams authStreams) error {
 	defer cancel()
 	cmd := c.loginCommand(ctx)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = streams.in, streams.out, streams.err
+	if _, terminal := authTerminal(streams.in); terminal {
+		stop, err := watchMapboxCallbacks(ctx, streams)
+		if err != nil {
+			return err
+		}
+		defer stop()
+	}
 	if err := cmd.Run(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return &mapboxFailure{code: "timeout"}
