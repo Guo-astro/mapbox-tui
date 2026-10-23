@@ -1,4 +1,5 @@
 import json
+import io
 import os
 from pathlib import Path
 import signal
@@ -6,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -178,6 +180,116 @@ class CalibrationTests(unittest.TestCase):
                 self.assertEqual(run.result["checks"][0]["outcome"], "blocked")
                 self.assertIn("command_finished", (run.path / "events.jsonl").read_text())
 
+    def test_output_limit_bounds_stdout_and_stderr_and_stops_noisy_process(self):
+        launch = subprocess.Popen
+        for streams in ((1,), (2,), (1, 2)):
+            with self.subTest(streams=streams):
+                run = Run(self.root)
+                children = []
+
+                def tracked_launch(*args, **kwargs):
+                    process = launch(*args, **kwargs)
+                    children.append(process)
+                    return process
+
+                script = f"import os\nwhile True:\n for fd in {streams!r}: os.write(fd, b'x' * 4096)"
+                with patch("run.subprocess.Popen", side_effect=tracked_launch), self.assertRaises(Stop) as caught:
+                    run.command("noisy", [sys.executable, "-c", script], self.root, output_limit=65536)
+                self.assertEqual(caught.exception.outcome, "budget_exhausted")
+                self.assertEqual(run.result["checks"][-1]["outcome"], "budget_exhausted")
+                self.assertEqual(sum((run.path / f"noisy.{stream}").stat().st_size
+                                     for stream in ("stdout", "stderr")), 65536)
+                for fd in streams:
+                    self.assertGreater((run.path / ("noisy.stdout" if fd == 1 else "noisy.stderr")).stat().st_size, 0)
+                self.assertIsNotNone(children[0].poll())
+                self.assertTrue(children[0].stdout.closed)
+                self.assertTrue(children[0].stderr.closed)
+                event = json.loads((run.path / "events.jsonl").read_text().splitlines()[-1])
+                self.assertEqual(event["kind"], "command_finished")
+                self.assertEqual(event["check"]["outcome"], "budget_exhausted")
+
+    def test_bounded_output_preserves_both_streams_up_to_the_exact_limit(self):
+        for limit in (12, 13):
+            with self.subTest(limit=limit):
+                run = Run(self.root)
+                check, output = run.command("small", [sys.executable, "-c",
+                                                      "import os; os.write(1, b'output'); os.write(2, b'errors')"],
+                                            self.root, output_limit=limit)
+                self.assertEqual(check["outcome"], "passed")
+                self.assertEqual(output, b"output")
+                self.assertEqual((run.path / "small.stderr").read_bytes(), b"errors")
+                self.assertEqual(check["output_limit_bytes"], limit)
+
+    def test_ready_streams_both_retain_diagnostics_before_budget_exhaustion(self):
+        run = Run(self.root)
+        stdout_read, stdout_write = os.pipe()
+        stderr_read, stderr_write = os.pipe()
+        for descriptor, content in ((stdout_write, b"o" * 1024), (stderr_write, b"e" * 1024)):
+            os.write(descriptor, content)
+            os.close(descriptor)
+        with os.fdopen(stdout_read, "rb") as stdout, os.fdopen(stderr_read, "rb") as stderr:
+            process = SimpleNamespace(stdout=stdout, stderr=stderr, args=["prepared-output"])
+            out, err = io.BytesIO(), io.BytesIO()
+            with self.assertRaises(Stop) as caught:
+                run.capture_output(process, out, err, output_limit=64)
+        self.assertEqual(caught.exception.outcome, "budget_exhausted")
+        self.assertEqual(out.getvalue(), b"o" * 32)
+        self.assertEqual(err.getvalue(), b"e" * 32)
+
+    def test_bounded_output_keeps_partial_logs_when_the_deadline_expires(self):
+        run = Run(self.root)
+        run.deadline = time.monotonic() + 0.2
+        with self.assertRaises(Stop) as caught:
+            run.command("slow", [sys.executable, "-c",
+                                 "import os, time; os.write(1, b'output'); os.write(2, b'errors'); time.sleep(60)"],
+                        self.root, output_limit=1024)
+        self.assertEqual(caught.exception.outcome, "timeout")
+        self.assertEqual((run.path / "slow.stdout").read_bytes(), b"output")
+        self.assertEqual((run.path / "slow.stderr").read_bytes(), b"errors")
+
+    def test_output_budget_kills_descendants_even_after_the_client_exits(self):
+        run = Run(self.root)
+        pid_file = self.root / "child.pid"
+        child = ("import os, sys, time\n"
+                 "while os.getppid() == int(sys.argv[1]): time.sleep(0.001)\n"
+                 "while True: os.write(1, b'x' * 4096)")
+        script = ("import os, subprocess, sys\n"
+                  f"process = subprocess.Popen([sys.executable, '-c', {child!r}, str(os.getpid())])\n"
+                  f"open({str(pid_file)!r}, 'w').write(str(process.pid))\n")
+        try:
+            with self.assertRaises(Stop) as caught:
+                run.command("descendant", [sys.executable, "-c", script], self.root, output_limit=65536)
+            self.assertEqual(caught.exception.outcome, "budget_exhausted")
+            child_pid = int(pid_file.read_text())
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    if Path(f"/proc/{child_pid}/stat").read_text().split()[2] == "Z":
+                        break
+                except FileNotFoundError:
+                    break
+                self.assertLess(time.monotonic(), deadline, "Noisy descendant is still running")
+                time.sleep(0.01)
+        finally:
+            if pid_file.exists():
+                try:
+                    os.kill(int(pid_file.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+    def test_cancellation_interrupts_bounded_output_capture(self):
+        run = Run(self.root)
+        previous = signal.signal(signal.SIGTERM, run.cancel)
+        try:
+            with self.assertRaises(Stop) as caught:
+                run.command("cancel", [sys.executable, "-c",
+                                       "import os, signal, time; os.write(1, b'output'); os.kill(os.getppid(), signal.SIGTERM); time.sleep(60)"],
+                            self.root, output_limit=1024)
+            self.assertEqual(caught.exception.outcome, "cancelled")
+            self.assertEqual(run.result["checks"][-1]["outcome"], "cancelled")
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+
     def test_termination_stops_command_group_and_finishes_receipt(self):
         tool = self.root / "go"
         tool.write_text(f"#!{sys.executable}\n" +
@@ -333,7 +445,11 @@ class CalibrationTests(unittest.TestCase):
 
     def test_report_explains_expected_failure_without_disguising_a_blocker(self):
         path = self.root / "runs/1234567890/result.json"
-        run = {"schema_version": 1, "candidate": "wrong", "outcome": "repair_failed", "checks": []}
+        run = {"schema_version": 1, "candidate": "wrong", "outcome": "repair_failed", "checks": [
+            {"id": "baseline", "outcome": "passed", "exit_code": 0},
+            {"id": "seed", "outcome": "assertion_failed", "exit_code": 1},
+            {"id": "candidate", "outcome": "assertion_failed", "exit_code": 1},
+        ]}
         page = render_run(path, self.root, run)
         self.assertIn("This failure is the expected answer", page)
         self.assertIn("did not pass this check", page)
@@ -343,6 +459,23 @@ class CalibrationTests(unittest.TestCase):
         page = render_run(path, self.root, run)
         self.assertNotIn("This failure is the expected answer", page)
         self.assertIn("does not tell us whether the repair works", page)
+
+    def test_report_keeps_latest_blocked_example_in_front_of_earlier_success(self):
+        progress = json.loads((HERE / "progress.json").read_text())
+        for identifier, date, outcome in [("older-success", "2026-10-21", "calibration_passed"),
+                                          ("newer-blocked", "2026-10-22", "blocked")]:
+            directory = self.root / "runs" / identifier
+            directory.mkdir(parents=True)
+            (directory / "result.json").write_text(json.dumps({
+                "schema_version": 1, "candidate": "good", "started_at": date,
+                "checks": [], "outcome": outcome, "execution_mode": "rootless-podman",
+            }))
+        page = render(self.root, progress)
+        visible, earlier = page.split('<details class="history">', 1)
+        self.assertIn('href="runs/newer-blocked/result.json"', visible)
+        self.assertIn("does not tell us whether the repair works", visible)
+        self.assertNotIn('href="runs/older-success/result.json"', visible)
+        self.assertIn('href="runs/older-success/result.json"', earlier)
 
     def test_report_does_not_present_unknown_record_as_success(self):
         path = self.root / "runs/example/result.json"
@@ -356,7 +489,11 @@ class CalibrationTests(unittest.TestCase):
     def test_malformed_check_fields_do_not_hide_other_runs(self):
         progress = json.loads((HERE / "progress.json").read_text())
         valid = Run(self.root)
-        valid.result.update(candidate="wrong", outcome="repair_failed")
+        valid.result.update(candidate="wrong", outcome="repair_failed", checks=[
+            {"id": "baseline", "outcome": "passed", "exit_code": 0},
+            {"id": "seed", "outcome": "assertion_failed", "exit_code": 1},
+            {"id": "candidate", "outcome": "assertion_failed", "exit_code": 1},
+        ])
         runner.write_json(valid.path / "result.json", valid.result)
         for field in ("id", "outcome"):
             for value in ([], {}, None, 3):
