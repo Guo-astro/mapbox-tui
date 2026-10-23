@@ -1,12 +1,181 @@
 # Developer harness pilot
 
-Current stage: Connect ([#104](https://github.com/adamcbrewer/mapbox-tui/issues/104)).
+Current stage: Verify ([#105](https://github.com/adamcbrewer/mapbox-tui/issues/105)).
 Pi now connects an OpenAI subscription model to four controlled tools, with
 prepared examples for checking the wiring without AI. Two live Luna attempts
 are recorded locally: one ineffective repair and one that passed the fixed
 import check. See the [Pi checkpoint and Fish commands](pi/README.md).
-The Connect learning checkpoint still awaits review; passing the test isn't approval.
+Adam asked to begin Verify after the Pi walkthrough. Earlier recorded review
+questions aren't automatically answered by that decision; passing a test isn't approval.
 The original repair command still runs trusted code on the host.
+
+## Let Pi retry a failed repair
+
+`pi_run.py --verify` connects Pi's check tool to independent verification.
+Every proposed patch is frozen and checked in a fresh copy. A genuine failed
+repair permits one revision in the same Pi conversation. Missing tools,
+invalid evidence, cancellation and timeouts stop without another repair.
+
+The whole session permits two repairs total, one replacement and check per
+repair, 12 tool calls and 600 seconds. Live mode retains the configured model
+request limit across both attempts, with the existing two-minute request timeout.
+Provider/SDK automatic retries remain disabled. This one repair retry is an
+explicit response to a failed independent check, not a transport retry.
+Pi cannot change the checks, permissions or budgets. Its final words don't
+decide success; the final patch and both attempt receipts must match.
+The tests, commands, runner source and check environment are fingerprinted before
+the session starts. Both attempts must use those same rules. A rule change stops
+the session as `invalid_input`; start a new session to use the changed rules.
+
+From this worktree's root in Fish, using the existing prepared image and installed
+Pi package described below and in [the Pi guide](pi/README.md):
+
+```fish
+set -l HARNESS_IMAGE_ID (cat /home/adam/localhost/mapbox-tui/reports/harness/prepared-image.id)
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/pi_run.py \
+  --image "$HARNESS_IMAGE_ID" --verify --demo retry
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/pi_run.py \
+  --image "$HARNESS_IMAGE_ID" --verify --demo exhausted
+python3 tools/harness/report.py
+xdg-open reports/harness/verify.html
+```
+
+These use prepared replies through the real Pi SDK, with no AI calls or model
+credentials. Retry should exit 0 as `verified_repair_passed`: the first repair
+fails its import test, then the revised exact patch passes all eight required
+checks. Exhausted should deliberately exit 1 as `budget_exhausted`: both repairs
+fail and no third edit is allowed. Expect 16 and 11 removed containers respectively,
+including the initial startup checks. Each demonstration takes several minutes.
+
+Use `--live` instead of `--demo retry` to use the configured OpenAI subscription.
+The five local preferences and Pi sign-in in the [Pi guide](pi/README.md) are
+required. This new feedback path is tested with prepared replies and the offline
+live adapter; this checkpoint does not establish a new AI repair success rate.
+Pi still edits only `go/import.go`; adding helper files through Pi is not demonstrated.
+
+Open Session receipt for the shared budgets, context and Pi conversation. Each
+Check receipt retains that attempt's exact patch, logs, check identities and
+fingerprints. A second edit doesn't overwrite the first attempt's verification
+evidence. Files stay local under `reports/harness/repair/runs/<session-id>/` and
+`reports/harness/verification/runs/<attempt-id>/`. No model claim can replace a
+matching receipt. Human review and the learning checkpoint remain separate.
+
+## Verify one frozen patch
+
+Verify takes the exact bytes of a proposed repair and checks
+them in a fresh copy of the pinned source. A fingerprint identifies the patch.
+The result also records the original, broken and repaired source fingerprints,
+check identities, exit codes, timings and log fingerprints. The report refuses
+to show a pass if the patch or required evidence no longer matches.
+
+The verifier makes no model calls. A supplied patch can come from an earlier Pi
+run, but its conversation or earlier receipt doesn't decide the new result.
+Python controls the checks; the agent cannot edit their runners or expectations.
+Execution uses the existing restricted Podman runner, without a host fallback.
+After the focused import test, it adds independent GPX, TCX and KML cases, then requires Go formatting and `make test` from
+the candidate's repository root. The source and trusted check scripts stay
+read-only. Only `/workspace/bin` becomes a temporary writable filesystem for
+the build's output; it disappears with the container. Compiler caches and
+test-created files use the existing temporary filesystem.
+The extra cases use different filenames, coordinates and XML contents. Their
+test source stays in the harness, outside Pi's write scope. The verifier copies
+it into separate disposable copies of the original, broken and repaired source.
+Only that trusted test file may differ from each recorded source tree. It must
+pass on the original, fail for the intended reason on the broken seed, then pass
+on the candidate. Otherwise a weak new test could give false confidence.
+The saved receipt binds the extra test's fingerprint and logs to the exact patch.
+The fixed Make command disables VCS discovery in the archived source and records
+the pinned commit explicitly. It uses `GOFLAGS=-mod=readonly -p=1 -trimpath` to
+keep package compilation serial and reuse matching build-cache entries within
+the existing 512 MiB temporary-disk and 1 GiB memory limits. It still runs every
+check in the pinned `make test` target.
+
+The existing image already provides Make, Python and Go v1.27.1. This step adds
+no packages or install hooks. We consulted the required
+[npm security guidance](https://github.com/lirantal/npm-security-best-practices);
+Pi's pinned package and disabled install scripts remain as documented separately.
+
+Use the already prepared immutable image from the
+[Connect setup](#container-execution-draft), with CPU, memory and pids delegated as
+described in the [Pi commands](pi/README.md). From this worktree's root, in Fish:
+
+```fish
+set -l HARNESS_IMAGE_ID (cat /home/adam/localhost/mapbox-tui/reports/harness/prepared-image.id)
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/verify.py \
+  --image "$HARNESS_IMAGE_ID" --demo new-file
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/verify.py \
+  --image "$HARNESS_IMAGE_ID" --demo forbidden-file
+python3 tools/harness/report.py
+xdg-open reports/harness/verify.html
+```
+
+The image-ID path above points at the existing main-checkout evidence on this
+machine. Use your own recorded image-ID path elsewhere. No image is pulled or
+rebuilt by these commands.
+
+New-file should return `repository_verification_passed` (exit 0). It repairs the
+importer using the explicitly permitted new `go/import_bom.go` helper. Both files
+belong to the frozen patch and its source fingerprints. All eight checks must
+pass, with nine containers removed.
+Forbidden-file should return `invalid_input` (exit 1). It deliberately tries to
+add a helper at the protected test path instead. The verifier refuses it after
+the original/seed checks, before executing any candidate code. Three containers
+should be removed. This is a successful refusal, not a failed import test.
+
+`--demo good` retains the earlier existing-file repair:
+Good should return `repository_verification_passed` (exit 0): original passes,
+planted bug fails, repair passes, then the extra cases confirm those same three
+outcomes before formatting and repository tests pass.
+`--demo tailored` should return `repair_failed` (exit 1): the repair recognises the original
+three filenames and passes their test. The extra cases expose that shortcut.
+Formatting and the repository suite stay unrun. This failure is deliberate.
+Good should confirm removal of nine containers; tailored, seven.
+`--demo unformatted` retains the earlier formatting failure:
+Unformatted should return `repair_failed` (exit 1): its repair passes the import
+and extra cases but fails formatting. The repository check stays unrun. This
+failure is deliberate and confirms removal of eight containers.
+`--demo wrong` retains the earlier ineffective repair, which fails at the import
+test and uses four containers.
+
+Use `--patch PATH` instead of `--demo` to check a saved candidate patch against
+the task's seeded source. It may edit `go/import.go` and add only the new
+`go/import_bom.go` named in the trusted task's `allowed_new_files`. No wildcards
+or command-line permission overrides. New-file permissions accept plain,
+non-test Go source paths directly under `go/`. Links, executable files, deletions,
+renames, mode changes, and edits to tests/check scripts remain refused.
+Both Git diffs and plain unified patches can describe a permitted addition.
+`result.json` lists each changed file's before/after fingerprints; a new file has
+no before fingerprint. Its complete contents are also in `candidate.patch`.
+Pi's existing edit tool still edits the importer only. These new-file examples
+use supplied patches; model-created helper files are not demonstrated here.
+`--demo empty` demonstrates refusing an empty repair before starting Podman.
+
+Evidence stays local under `reports/harness/verification/runs/<run-id>/`.
+Open Receipt in the Verify report, then inspect Result, Events and Candidate
+patch. Command output stays beside the receipt in `*.stdout` and `*.stderr`.
+Saved independent-test source uses `.go.txt`, so Go's repository-wide test search
+doesn't treat evidence as application code. Earlier local copies were renamed
+without changing their contents, then the Verify report was recaptured. Historical
+independent-case receipts still recognise their unchanged test fingerprints.
+Check records are saved while the run progresses, so an interrupted run retains
+its observed steps. Crash recovery is still #106; this isn't a durable journal.
+
+The current `frozen-evaluator-v1` scope requires eight checks: the three original
+import checks, the three extra-case checks, formatting and repository tests.
+It also binds each check and both attempts to the rules recorded at startup.
+Older `focused-only-v1`, `repository-checks-v1`, `independent-cases-v1` and
+`permitted-files-v1` receipts retain their original scope. They do not establish
+that verification rules were frozen for the whole session and cannot satisfy
+the current gate.
+Missing checks, mismatched source fingerprints or changed logs
+prevent a pass. Environment failures stay separate from failed repairs.
+
+The bounded Pi repair retry is described above. The harness's own tests run separately when
+developing this tool. `fully_verified` stays false. Human review remains pending.
 
 I'm building a tool that can take a bug, let an AI try fixing it, then check the
 change before I review it. I also want to understand how it works, so we're
@@ -451,6 +620,8 @@ stages and run timelines aren't built yet. Runtime-readiness records stay separa
 
 ```sh
 python3 -m unittest discover -s tools/harness -p 'test_*.py'
+node --test tools/harness/pi/loop.test.mjs
+python3 tools/harness/pi_integration_test.py
 make test
 ```
 
@@ -459,8 +630,13 @@ tests or tools, attempts to edit the tests, timeouts, incomplete evidence and
 report handling, including escaping text safely. The repository checks cover the
 existing product. Run the repair demos and setup-failure examples above to see
 the actual outcomes, including why an unfinished check is not a failed repair.
-CI runs the Python tests too; it does not run the calibration demos or upload
-their local records.
+The plain Python suite needs no Node packages. CI runs the SDK tests separately,
+using Node v26.12.1 and the locked Pi dependencies with install scripts disabled
+and a seven-day npm release cooldown. This follows the
+[npm security guidance](https://github.com/lirantal/npm-security-best-practices).
+The Python-to-Pi integration test uses prepared replies and mocked check execution;
+it needs no account, model calls or Podman. CI does not run the container demos
+or upload local records.
 
 Before moving on, I want to be able to explain why the deliberately broken code
 failed, why the good repair passed, and what could still be wrong despite that

@@ -143,6 +143,29 @@ class CalibrationTests(unittest.TestCase):
                 self.assertNotIn("candidate-apply", [check["id"] for check in run.result["checks"]])
                 self.assertEqual(source.read_text(), "package main\n")
 
+    def test_new_file_permission_does_not_allow_links_executables_or_overwrites(self):
+        source = self.root / "go/import_bom.go"
+        source.parent.mkdir()
+        for mode in ("100755", "120000"):
+            change = ("diff --git a/go/import_bom.go b/go/import_bom.go\nnew file mode " + mode +
+                      "\n--- /dev/null\n+++ b/go/import_bom.go\n@@ -0,0 +1 @@\n+package main\n").encode()
+            run = Run(self.root)
+            with self.subTest(mode=mode), self.assertRaises(Stop) as caught:
+                apply_patch(run, self.root, change, "candidate", ["go/import.go"], ["go/import_bom.go"])
+            self.assertEqual(caught.exception.outcome, "invalid_input")
+            self.assertFalse(source.exists())
+        source.write_text("package main\n")
+        change = b"--- a/go/import_bom.go\n+++ b/go/import_bom.go\n@@ -1 +1 @@\n-package main\n+package other\n"
+        with self.assertRaises(Stop):
+            apply_patch(Run(self.root), self.root, change, "candidate", ["go/import.go"], ["go/import_bom.go"])
+        self.assertEqual(source.read_text(), "package main\n")
+
+    def test_explicit_git_new_file_mode_is_supported(self):
+        (self.root / "go").mkdir()
+        change = b"diff --git a/go/helper.go b/go/helper.go\nnew file mode 100644\n--- /dev/null\n+++ b/go/helper.go\n@@ -0,0 +1 @@\n+package main\n"
+        apply_patch(Run(self.root), self.root, change, "candidate", ["go/import.go"], ["go/helper.go"])
+        self.assertEqual((self.root / "go/helper.go").read_text(), "package main\n")
+
     def test_unsupported_platforms_save_blocked_without_launching_commands(self):
         for platform in ("win32", "darwin"):
             with self.subTest(platform=platform):
@@ -412,7 +435,7 @@ class CalibrationTests(unittest.TestCase):
                     child.wait()
 
     def test_empty_report_and_unreadable_record_are_honest(self):
-        progress = json.loads((HERE / "progress.json").read_text())
+        progress = dict(json.loads((HERE / "progress.json").read_text()), stage="Connect")
         page = render(self.root, progress)
         self.assertIn("No runs recorded", page)
         self.assertIn("No comparisons yet", page)
@@ -421,7 +444,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertIn("Unreadable record", render(self.root, progress))
 
     def test_report_escapes_records_and_does_not_promote_review(self):
-        progress = json.loads((HERE / "progress.json").read_text())
+        progress = dict(json.loads((HERE / "progress.json").read_text()), stage="Connect")
         progress["status"] = "awaiting-review"
         run = Run(self.root)
         run.result.update(candidate="<script>alert(1)</script>", outcome="calibration_passed")
@@ -432,7 +455,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertIn("Time not recorded", page)
 
     def test_report_orders_by_run_start_and_keeps_failed_runs(self):
-        progress = json.loads((HERE / "progress.json").read_text())
+        progress = dict(json.loads((HERE / "progress.json").read_text()), stage="Connect")
         for identifier, date, outcome in [("a", "2026-10-22", "calibration_passed"),
                                           ("z", "2026-10-21", "repair_failed")]:
             path = self.root / "runs" / identifier
@@ -461,7 +484,7 @@ class CalibrationTests(unittest.TestCase):
         self.assertIn("does not tell us whether the repair works", page)
 
     def test_report_keeps_latest_blocked_example_in_front_of_earlier_success(self):
-        progress = json.loads((HERE / "progress.json").read_text())
+        progress = dict(json.loads((HERE / "progress.json").read_text()), stage="Connect")
         for identifier, date, outcome in [("older-success", "2026-10-21", "calibration_passed"),
                                           ("newer-blocked", "2026-10-22", "blocked")]:
             directory = self.root / "runs" / identifier
@@ -487,7 +510,7 @@ class CalibrationTests(unittest.TestCase):
             self.assertNotIn("The proposed repair passed this check.", page)
 
     def test_malformed_check_fields_do_not_hide_other_runs(self):
-        progress = json.loads((HERE / "progress.json").read_text())
+        progress = dict(json.loads((HERE / "progress.json").read_text()), stage="Connect")
         valid = Run(self.root)
         valid.result.update(candidate="wrong", outcome="repair_failed", checks=[
             {"id": "baseline", "outcome": "passed", "exit_code": 0},
