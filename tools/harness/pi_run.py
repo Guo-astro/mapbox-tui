@@ -20,6 +20,11 @@ LIMIT = 16384
 MAX_CALLS = 12
 
 
+class ModelRequestLimit(Stop):
+    def __init__(self, reason):
+        super().__init__("budget_exhausted", reason)
+
+
 def repository_instructions(task, checkout):
     expected = task.get("instructions_sha256", {})
     path = checkout / "AGENTS.md"
@@ -110,6 +115,47 @@ class Tools:
             raise ValueError("File must be a plain file inside the disposable copy")
         return path
 
+    def edit_arguments(self, args):
+        return args
+
+    def write_edit(self, args, path, before, after):
+        path.write_bytes(after)
+
+    def edit(self, args, path, result):
+        operation = args["operation_id"]
+        fingerprint = digest(json.dumps(args, sort_keys=True).encode())
+        if operation in self.operations:
+            previous, saved = self.operations[operation]
+            if previous != fingerprint:
+                raise ValueError("Operation ID was already used with different arguments")
+            result = {**saved, "replayed": True}
+        else:
+            if not self.edit_available():
+                raise ValueError("No edit is available; follow the check and repair budget")
+            before = path.read_bytes()
+            if digest(before) != args["expected_sha256"]:
+                raise ValueError("File changed; read its current hash before editing")
+            old, new = args["old"], args["new"]
+            if not isinstance(old, str) or not isinstance(new, str) or not old or \
+                    max(len(old), len(new)) > LIMIT or old == new or "\0" in old + new:
+                raise ValueError("Edit must be a bounded, non-empty change")
+            source = before.decode()
+            if source.count(old) != 1:
+                raise ValueError("Edit must match exactly one location")
+            updated = source.replace(old, new, 1)
+            if len(updated.encode()) > 256 * 1024:
+                raise ValueError("Source size limit reached")
+            self.write_edit(args, path, before, updated.encode())
+            patch = "".join(difflib.unified_diff(self.seeded.splitlines(True), updated.splitlines(True),
+                                               fromfile="a/go/import.go", tofile="b/go/import.go"))
+            (self.run.path / "candidate.patch").write_text(patch)
+            self.run.result["patch_sha256"] = digest(patch.encode())
+            self.edits += 1
+            result.update(outcome="ok", explanation="Edited the disposable copy", evidence="candidate.patch",
+                          before_sha256=digest(before), sha256=digest(path.read_bytes()))
+            self.operations[operation] = fingerprint, result.copy()
+        return result
+
     def dispatch(self, name, args):
         self.calls += 1
         if self.calls > MAX_CALLS:
@@ -139,6 +185,7 @@ class Tools:
                     result.update(matches=matches[:20], truncated=len(matches) > 20)
                 result.update(outcome="ok", explanation="Read from the disposable copy")
             elif name == "harness_edit":
+                args = self.edit_arguments(args)
                 if set(args) != {"file", "operation_id", "expected_sha256", "old", "new"}:
                     raise ValueError("Unexpected or missing edit arguments")
                 operation = args["operation_id"]
@@ -146,37 +193,7 @@ class Tools:
                     raise ValueError("Invalid operation ID")
                 result.update(operation_id=operation, file=args["file"])
                 path = self.path(args["file"], writable=True)
-                fingerprint = digest(json.dumps(args, sort_keys=True).encode())
-                if operation in self.operations:
-                    previous, saved = self.operations[operation]
-                    if previous != fingerprint:
-                        raise ValueError("Operation ID was already used with different arguments")
-                    result = {**saved, "replayed": True}
-                else:
-                    if not self.edit_available():
-                        raise ValueError("No edit is available; follow the check and repair budget")
-                    before = path.read_bytes()
-                    if digest(before) != args["expected_sha256"]:
-                        raise ValueError("File changed; read its current hash before editing")
-                    old, new = args["old"], args["new"]
-                    if not isinstance(old, str) or not isinstance(new, str) or not old or \
-                            max(len(old), len(new)) > LIMIT or old == new or "\0" in old + new:
-                        raise ValueError("Edit must be a bounded, non-empty change")
-                    source = before.decode()
-                    if source.count(old) != 1:
-                        raise ValueError("Edit must match exactly one location")
-                    updated = source.replace(old, new, 1)
-                    if len(updated.encode()) > 256 * 1024:
-                        raise ValueError("Source size limit reached")
-                    path.write_text(updated)
-                    patch = "".join(difflib.unified_diff(self.seeded.splitlines(True), updated.splitlines(True),
-                                                       fromfile="a/go/import.go", tofile="b/go/import.go"))
-                    (self.run.path / "candidate.patch").write_text(patch)
-                    self.run.result["patch_sha256"] = digest(patch.encode())
-                    self.edits += 1
-                    result.update(outcome="ok", explanation="Edited the disposable copy", evidence="candidate.patch",
-                                  before_sha256=digest(before), sha256=digest(path.read_bytes()))
-                    self.operations[operation] = fingerprint, result.copy()
+                result = self.edit(args, path, result)
             elif name == "harness_check":
                 if args != {"preset": "xml-leading-bom"} or not self.check_available():
                     raise ValueError("No xml-leading-bom check is available")
@@ -210,7 +227,10 @@ def scripted_calls(tools, demo):
 
 
 def load_live_config():
-    config = json.loads((HERE / "pi/config.local.json").read_text())
+    return validate_live_config(json.loads((HERE / "pi/config.local.json").read_text()))
+
+
+def validate_live_config(config):
     if not isinstance(config, dict) or set(config) != {
             "provider", "model", "auth", "maxModelRequests", "maxOutputTokensPerRequest"}:
         raise Stop("invalid_input", "Use the five preferences in pi/config.example.json")
@@ -229,7 +249,8 @@ def pi_loop(run, tools, temporary, demo, config=None):
     package = HERE / "pi"
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(temporary),
            "PI_OFFLINE": "1", "PI_CODING_AGENT_DIR": str(temporary / "agent")}
-    payload = {"type": "start", "task": run.task, "maxToolCalls": MAX_CALLS}
+    initial_calls = tools.calls
+    payload = {"type": "start", "task": run.task, "maxToolCalls": MAX_CALLS - initial_calls}
     payload["repoInstructions"] = getattr(run, "repo_instructions", [])
     payload.update(getattr(tools, "start_context", {}))
     permissions = []
@@ -281,6 +302,12 @@ def pi_loop(run, tools, temporary, demo, config=None):
                         message_type = message.get("type")
                         if message_type == "context":
                             write_json(run.path / "context.json", message)
+                        elif message_type == "model_reserve":
+                            if not config or not hasattr(tools, "reserve_model") or not isinstance(message.get("id"), str):
+                                raise Stop("invalid_input", "Unexpected model reservation")
+                            result = tools.reserve_model(message)
+                            process.stdin.write((json.dumps({"id": message["id"], "result": result}) + "\n").encode())
+                            process.stdin.flush()
                         elif message_type in ("model_request", "model_response", "model_payload", "model_payload_rejected", "model_dispatch", "model_usage"):
                             run.event(message_type, **{key: value for key, value in message.items() if key != "type"})
                             if message_type == "model_request":
@@ -291,9 +318,13 @@ def pi_loop(run, tools, temporary, demo, config=None):
                                 run.result["model_requests_dispatched"] += 1
                             elif message_type == "model_usage":
                                 run.result.setdefault("provider_usage", []).append(message)
+                            if getattr(run, "journal", None):
+                                run.journal.save()
                         elif message_type == "session":
                             write_json(run.path / "pi-session.json", message)
                         elif message_type == "failed":
+                            if message.get("outcome") == "budget_exhausted" and message.get("limit") == "model_requests":
+                                raise ModelRequestLimit(message.get("reason", "Model-request budget reached"))
                             raise Stop(message.get("outcome", "blocked"), message.get("reason", "Pi stopped"))
                         elif message_type == "tool":
                             if not isinstance(message.get("id"), str):
@@ -309,7 +340,10 @@ def pi_loop(run, tools, temporary, demo, config=None):
                                 run.result["model_claim"] = "\n".join(claims)[-2000:] or None
                             if process.wait(timeout=max(0.1, run.deadline - time.monotonic())) != 0:
                                 raise Stop("blocked", "Pi reported a failed exit")
-                            expected = tools.calls if config else len(payload["calls"])
+                            expected = tools.calls - initial_calls if config else len(payload["calls"])
+                            if (message.get("toolResults") == expected and config and
+                                    run.result["model_requests"] == config["maxModelRequests"] and tools.check_available()):
+                                raise ModelRequestLimit("Model-request budget reached with a saved edit awaiting verification")
                             if not tools.checked or message.get("toolResults") != expected or (config and not tools.completed()):
                                 raise Stop("incomplete", "Pi did not finish the required tool sequence")
                             return

@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-23",
-  "source": "GitHub issues #105 and #111; Adam asked to begin Verify on 23 October 2026",
-  "stage": "Verify",
+  "updated_at": "2026-10-24",
+  "source": "GitHub issue #106; Adam explicitly asked to start Recover in a new worktree on 24 October 2026",
+  "stage": "Recover",
   "status": "awaiting-review",
-  "next": "The #105 implementation checklist is ready for learning review. Compare the prepared failed-then-passing retry, the two-failure budget stop and the missing-image environment stop. Discuss the four learning questions and report-only understanding before advancing to Recover (#106); no acceptance is inferred from passing tests or a commit.",
+  "next": "Record Adam's reviewed decision after the four-question recovery discussion. PR #115 is open; keep #106 open and do not begin Compare automatically.",
   "decisions": [
     "This is a developer tool, separate from the shipped map app. Pi tool wiring is being checked with prepared responses before live AI calls.",
     "Define (#103) is closed. Adam selected Connect (#104) as the next stage on 22 October 2026. This records the decision to advance, not unrecorded answers to the learning questions.",
@@ -47,14 +47,35 @@
     "The fourth Verify slice freezes permitted new source alongside existing edits. The helper-file repair passed all eight checks in 215.8162 seconds (67650cc340cd42838fe597d0e42dcb4e, nine containers removed). The deliberate addition at the protected independent-test path was refused before candidate execution (e693388d16864504b45e103eeda5fe58, three containers removed). Earlier saved Go evidence was accidentally discovered by repository Go tests; it now uses text filenames without changing its bytes, and historical receipts still match. Python policy checks and the separate Pi tests passed. No model calls, new packages or image pulls. Bounded Pi feedback and our learning review remain pending.",
     "Adam asked to commit permitted new-file support and continue. It is committed locally as 9194aeb. The next slice connects independent check failures back to Pi with at most two repairs total and shared existing request, tool and time limits. No later stage is authorised by passing these checks.",
     "The final Verify implementation slice connects harness_check to an independent fresh-copy verifier and permits at most two edits/checks in one Pi session, sharing 12 tool calls, the configured model-request limit and 600 seconds. Prepared SDK run 53a50109d13f4b36bb5a7bd6042b58c6 failed its first repair then passed all eight checks on the second exact patch in 331.6282 seconds; all 16 containers were removed. Prepared run 52229a7a541c488f9ce99186d305d7a0 failed both repairs and stopped at the repair limit in 197.8421 seconds; all 11 containers were removed. A deliberately unavailable immutable image stopped ddb862868dcf4b25ba0890c987f8d0b3 before Pi context, repair attempts or containers. No AI model ran. Python tests cover environment stops during verification, shared budgets, cancellation ownership, stale receipts and fabricated completion; the offline live adapter keeps one request budget across retry feedback. The learning review remains pending, and no later stage has begun.",
-    "After the harness-engineering review, Adam asked to fix clean-checkout testing and freeze checking rules, then run simplify, code-review and go-stack subagents before committing, pushing and opening a PR for Codex feedback. Python policy tests now run without Node packages; a separate pinned Pi CI job restores locked dependencies with install scripts disabled and a seven-day release cooldown. Both affected jobs fetch the pinned task history. Current frozen-evaluator-v1 sessions bind both repairs to the same tests, commands, runner source and check environment; drift stops as invalid_input. The final clean checkout passed 145 Python tests, 17 Pi tests and one separate Python-to-Pi SDK integration test. Root make test and format-check passed. Prepared run 94deb38e09e94bbf96105e1e1d7320f4 failed its first repair, then passed all eight checks on the second exact patch in 332.8033 seconds; both attempts used evaluator 76df1ef25b346e9bc4c7290318037d12c5ab5ea717442d3e250d4d2f6085c089 and all 16 containers were removed. The subagent findings were resolved. No repair-model inference was used for these demonstrations; human acceptance and the learning review remain pending."
+    "After the harness-engineering review, Adam asked to fix clean-checkout testing and freeze checking rules, then run simplify, code-review and go-stack subagents before committing, pushing and opening a PR for Codex feedback. Python policy tests now run without Node packages; a separate pinned Pi CI job restores locked dependencies with install scripts disabled and a seven-day release cooldown. Both affected jobs fetch the pinned task history. Current frozen-evaluator-v1 sessions bind both repairs to the same tests, commands, runner source and check environment; drift stops as invalid_input. The final clean checkout passed 145 Python tests, 17 Pi tests and one separate Python-to-Pi SDK integration test. Root make test and format-check passed. Prepared run 94deb38e09e94bbf96105e1e1d7320f4 failed its first repair, then passed all eight checks on the second exact patch in 332.8033 seconds; both attempts used evaluator 76df1ef25b346e9bc4c7290318037d12c5ab5ea717442d3e250d4d2f6085c089 and all 16 containers were removed. The subagent findings were resolved. No repair-model inference was used for these demonstrations; human acceptance and the learning review remain pending.",
+    "Adam explicitly asked to pick up #106 in a new worktree. This authorises Recover implementation; it does not invent answers to the pending #105 learning questions. The first recovery path retains a one-file prepared Pi session, durable edit intents and observed hashes, reconciles disk and independent receipts before fresh context, and stops on conflict or uncertain verification. Live conversation resumption is not enabled.",
+    "The recovery code review found a cancel/publication race and malformed-journal stale success. The fixes serialize cancellation with final publication, validate journal structure, recheck final source/evidence, and keep reconstruction refusals separate from historical receipts. Per-entry Pi logs and observed partial patches are retained. Learning review remains pending.",
+    "Prepared recovery evidence: lost-reply run ace0957e6c98443188c6f84996eacdb8 resumed in 285.6675 seconds, failed its first repair then passed all eight checks on the second; all 16 containers were removed. Deliberate conflict 4e5b34fac4c1471682c62b0ee1536be9 preserved the human change and removed all three setup containers. Final checks passed 169 Python tests (24 recovery), 17 Pi tests, one SDK integration and root make test format-check. The passing real run predates the final malformed-entry validation and navigation-label fixes; the final Python suite covers those fixes. Handoff posted at https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6383961829. Work is local and uncommitted; #106 and learning review remain open.",
+    "Adam asked to commit the prepared recovery work and explain the takeaways and next step. This authorises the commit; it does not supply unrecorded learning-checkpoint answers or authorise a live model recovery run.",
+    "After committing the prepared slice as decd1d6, Adam said \u201cgreat, let's go\u201d in response to the proposed walkthrough and live recovery extension. This authorises implementing the live path and one bounded recovery demonstration using the existing Luna subscription preferences: ten model requests, twelve tools, two repairs, 600 seconds, two-minute requests and no hard output-token cap. It does not invent learning answers or stage acceptance.",
+    "Live recovery now reserves each numbered model request durably before Node can dispatch it. An uncertain request stays spent across fresh contexts. Saved model identity, twelve tools, two repairs and the original deadline are retained. The review found malformed provider-usage records could break finalization; restoration now refuses them and finalization records incomplete evidence instead of crashing. Before the bounded live demonstration, 176 Python tests (31 recovery), 21 Pi tests, one SDK integration and root make test format-check passed.",
+    "Bounded Luna subscription run 250b7c99934f407fa025ca9d485b6c9f used seven requests in its first context and the remaining three after fresh-context resume, then stopped as budget_exhausted. Both proposed edits supplied mistyped SHA-256 values and were refused. Disk had not changed; the initial description of an out-of-date hash was corrected after inspecting the receipts. Eight tool calls, zero edit intents, zero verification attempts and all three containers removed. Complete usage: 68,105 input tokens (8,064 cached), 907 output, 69,012 total, zero reported reasoning tokens. Wall time across both entries was 234.5568 seconds including the pause. The planned after-write fault was never reached. This demonstrates durable live budgets and fail-safe edit refusal, not successful live repair or applied-edit recovery. Another live run was not started after the configured limit.",
+    "Live recovery implementation and its deliberately bounded failure are documented at https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6384588837. The recommended next change is a saved-read reference while retaining Python-owned full-hash checks. New implementation remains uncommitted; no extra live run or budget increase was made.",
+    "Adam asked to commit and continue after the bounded live failure. This authorises the live-budget commit, a saved-read reference that retains Python-owned full-hash checks, and another separately bounded live recovery demonstration with the existing model and limits. The earlier run remains stopped at its original ten-request cap; learning review remains pending.",
+    "Committed the live-budget slice as 2621b28 after Adam asked to commit and continue. The next slice returns short saved-read IDs for live recovery edits; Python resolves each to its original full file hash and enforces the existing comparison. Unknown, stale and wrong-file references are refused. Completed read results survive restart; edit intents still retain normalized full-hash arguments. Before the new live demonstration, 182 Python tests (37 recovery), 22 Pi tests, one SDK integration and root make test format-check passed.",
+    "Saved-read recovery review found no actionable bugs. Live Luna run 965afc49febf4987958f18bbedeaf039 reached the deliberate after-write stop after two model requests. Fresh context reconciled the applied edit without a second write and rebuilt a planted false success summary. Its first candidate failed the independent import check. A third and final recovery entry retained the six spent requests, refused reuse of an operation ID with changed arguments, then applied a second edit on the tenth request. The task stopped budget_exhausted before checking that edit: nine tool calls, two edit intents, one failed verification, three recovery entries and seven containers removed. Complete usage: 50,203 input tokens (8,064 cached), 714 output, 50,917 total; 187.5736 seconds wall time. No successful receipt is accepted. This demonstrates actual applied-edit recovery and stale-summary resistance, not a correct model repair. Earlier failure evidence remains unchanged; learning review stays pending.",
+    "Saved-read recovery findings and four learning questions are posted at https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6384769033. Adam asked to commit and continue; the tested saved-read slice is being committed locally. Nothing is pushed, #106 stays open and the learning checkpoint remains pending.",
+    "Separate independent verification of the saved final Luna patch passed all eight required checks in run 785011ceaa084becb5253f3cdcea64de, taking 204.9462 seconds with nine containers removed and zero model calls. The original exhausted recovery receipt is byte-for-byte unchanged. Findings: https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6384913408. A passing saved patch and a completed automatic recovery session remain separate claims.",
+    "After the plain-language explanation, Adam asked to commit and continue. The existing code was already committed as e37f630; this authorises automatically checking a final saved edit when model requests run out, within the remaining tool calls and original deadline. It does not reset old sessions, raise budgets or mark the learning checkpoint accepted.",
+    "The runner now distinguishes actual model-request exhaustion from transport, output and tool failures. At the saved model limit, it can request one ordinary journaled harness_check for a pending edit and complete from exact independent receipts without a final model explanation. Cancellation, deadline, tool allowance, file reconciliation and unfinished-check stops retain their existing gates. 192 Python tests (45 recovery), 22 Pi tests, one SDK integration and root make test format-check passed before the real-check demonstration.",
+    "Automatic final-check demonstration c3ce8647f5394495a7c4a33a4742b1a7 used the exact saved Luna patch with a simulated exhausted model allowance and real independent Podman checks. The runner requested the ordinary third tool itself, passed all eight checks in bf883e034a1e47cb9f466373c4125cb0 and published verified_repair_passed with matching receipts. Duration 279.1509 seconds, all twelve containers removed, zero actual model calls. Original exhausted receipts are unchanged. Separate review found no actionable bugs. Handoff: https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6385077805. This is prepared boundary evidence; no new live-model run was made. Learning review remains pending.",
+    "Adam asked whether recovery was behaving as expected, which budgets applied and how to get a successful repair. The explanation distinguished safe recovery from model repair quality. The saved second Luna patch then passed separate verification; the automatic final-check extension now tests it without spending another model request. Adam asked for simpler explanations twice, so the Recover report must explain outcomes without requiring JSON or a separate chat explanation.",
+    "After asking what remained, Adam said \u201ccool, let's go!\u201d to the report, learning walkthrough and publication plan. This authorises the readable Recover report, commit, push and PR. It does not supply answers to the learning questions or authorise issue closure or moving to Compare. The report now includes recovery sessions and their saved journals, labels live versus prepared examples, preserves refused resumes as historical evidence and links the shared glossary.",
+    "Readable Recover report now includes recovery receipts and journals, explains each deliberate stop/reconciliation/check result, distinguishes real model work from prepared limits and retains evidence in a portable sealed snapshot. The report review found malformed top-level state, linked check output and invalid saved model settings could mislead or block reporting. Structure and link guards plus per-session error handling address those findings; the follow-up review found no actionable bugs. All 200 Python tests (34 report tests) and root make test format-check passed. Browser checks at 1280px and 390px confirmed readable results, intact section links, journal selection and explanations for every new evidence file. Findings: https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6385345752. No new model call or uploaded telemetry. The first learning question is open in chat; no answer or approval has been inferred. The branch is being committed, pushed and proposed for review as authorised.",
+    "All four Recover learning questions have been discussed with Adam and his answers retained verbatim with clarifications. The discussion covered duplicate/overwritten edits after lost replies, checking actual file bytes against saved fingerprints, preserving written changes on cancellation, and investigating incomplete evidence before deciding to resume or start fresh. Adam correctly identified changed criteria and exhausted constraints as reasons to reconsider resume. The learning checkpoint is discussed and awaiting his explicit reviewed decision. At code commit 6b6ff8e, all five GitHub checks passed and Codex reported no findings; branch approval remains a separate review requirement.",
+    "Adam requested commit/push/PR updates, issue checklist updates, simplify and review-stack subagents, and monitoring for feedback. Simplify changed only report.py: explicit branches replace nested recovery/stage selections, preserving wording and branch priority. All six stage HTML outputs are byte-for-byte identical under a fixed timestamp. The review-stack subagent reviewed all sixteen feature files with core, completeness, failure-path, security-history, security and test-analysis passes; no actionable findings or unresolved code defects. It ran 95 focused Python and 22 Node tests. Parent verification passed 200 Python tests,22 Pi tests,1 SDK integration and root make test format-check. An additional end-to-end offline reservation/exhaustion integration test is optional, not a completion gate. The issue checklist now records twenty completed tasks; reviewed decision and report-alone walkthrough remain unchecked. Monitoring is for PR #115; no issue closure or next stage is inferred."
   ],
   "blockers": [],
   "questions": [
-    "How independent is this verifier from the agent?",
-    "How could a patch pass tests and still be wrong?",
-    "How do we distinguish a weak test from an incorrect fix?",
-    "Which decisions still require human review?"
+    "Why isn't replaying the last tool call always safe?",
+    "When do we trust the journal, and when must we inspect disk?",
+    "What does cancellation promise, and what changes might already exist?",
+    "When is starting a fresh run safer than resuming?"
   ],
   "provider_scope": [
     "openai"
@@ -73,6 +94,59 @@
       "label": "Startup bug fixed",
       "summary": "An earlier startup bug stalled Pi. We cancelled this run before any model requests, then fixed the startup code. All three containers were removed. This historical run did not produce a repair result.",
       "evidence": "reports/harness/pi-live-verification.json, initial_cli_cancelled; later successful Luna run da117ff76b74443f8928767e8107a585"
+    },
+    "250b7c99934f407fa025ca9d485b6c9f": {
+      "kind": "live-recovery-budget-stop",
+      "title": "Live recovery: shared request limit held",
+      "label": "No repair applied",
+      "summary": "Luna mistyped two file fingerprints. Both edits were refused. Fresh context kept the seven requests already spent and stopped after three more. No candidate check ran; all three containers were removed. Recovery after a real applied edit remains unproven.",
+      "evidence": "reports/harness/live-recovery-demonstration.json"
+    },
+    "965afc49febf4987958f18bbedeaf039": {
+      "kind": "live-recovery-budget-stop",
+      "title": "Live recovery: interrupted edit recovered",
+      "label": "Final patch passed separate verification",
+      "summary": "The recovery task exhausted its ten requests with an unchecked second edit. Separate verification 785011ceaa084becb5253f3cdcea64de later passed all eight required checks for that exact patch, with zero new model calls and nine containers removed. The original budget_exhausted receipt is unchanged.",
+      "evidence": "reports/harness/read-reference-live-demonstration.json; reports/harness/luna-final-patch-verification.json"
+    },
+    "c3ce8647f5394495a7c4a33a4742b1a7": {
+      "kind": "prepared-final-verification",
+      "title": "Recovery: runner verifies the last edit",
+      "label": "Prepared limit; real checks passed",
+      "summary": "The exact saved Luna patch passed all eight checks after the runner requested verification at a simulated model-request limit. Zero model calls, three tools and twelve containers removed.",
+      "evidence": "reports/harness/automatic-final-check-demonstration.json"
     }
+  },
+  "learning_review": {
+    "stage": "Recover",
+    "status": "discussed-awaiting-decision",
+    "responses": [
+      {
+        "question": "Why isn't replaying the last tool call always safe?",
+        "user_answer": "The ai could find alternative solutions potentially harmful",
+        "clarification": "Starting over with the model can produce a different unwanted change. The immediate replay risk is that the original edit already reached disk: repeating it can duplicate work or overwrite newer content. Compare actual file bytes with the recorded before/after hashes before deciding to replay.",
+        "reviewed_decision": null
+      },
+      {
+        "question": "When do we trust the journal, and when must we inspect disk?",
+        "user_answer": "The events and or result",
+        "clarification": "Events and results provide useful evidence, but may be incomplete after a crash or lost reply. Inspect the actual file bytes and compare their hash with the journalled before/after hashes: after means already applied, before permits retry, neither means conflict. Independent receipts still determine which checks completed.",
+        "reviewed_decision": null
+      },
+      {
+        "question": "What does cancellation promise, and what changes might already exist?",
+        "user_answer": "Verify changes against receipts, without evidence we record the run as failed and clean up",
+        "clarification": "Checking evidence is necessary. Cancellation stops future work and cleans up owned processes and containers while preserving saved edits, partial patches and logs. It does not undo edits already written. Missing or uncertain evidence means cancelled/incomplete, while repair_failed means completed checks showed the candidate did not work. Unconfirmed cleanup remains explicit.",
+        "reviewed_decision": null
+      },
+      {
+        "question": "When is starting a fresh run safer than resuming?",
+        "user_answer": "Criteria changed, risk of budget or constraint overflow. Incomplete is inconclusive and requires investigation rather than assuming resume is possible",
+        "clarification": "Changed requirements need a new task with explicit scope. Exhausted budgets remain exhausted; a new task must be a deliberate decision rather than an automatic reset. Incomplete evidence requires investigation before deciding whether safe resume or a fresh bounded task is appropriate.",
+        "reviewed_decision": null
+      }
+    ],
+    "discussion_complete": true,
+    "discussion_record": "https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6385551537"
   }
 }

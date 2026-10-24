@@ -309,6 +309,7 @@ test("truncated tool calls and provider failures cannot execute or expose privat
     assert.equal(tools, 0);
     assert.ok(!JSON.stringify(execution.sent).includes("private-token"));
     assert.ok(!execution.sent.some(event => event.type === "finished"));
+    assert.equal(execution.requests.failure.limit, undefined);
   }
 });
 
@@ -384,4 +385,102 @@ test("explicitly uncapped subscription payload keeps model/tool guards and recor
   assert.equal(execution.options.length, 1);
   assert.equal(execution.options[0].timeoutMs, 120000);
   assert.equal(execution.options[0].maxRetries, 0);
+});
+
+
+test("model reservation is acknowledged before provider work and denied reservations send nothing", async () => {
+  for (const approved of [true, false]) {
+    const execution = await preparedLive([{ content: [{ type: "text", text: "Done" }], stopReason: "stop" }]);
+    let reserved = false;
+    const original = execution.runtime.streamSimple.bind(execution.runtime);
+    execution.runtime.streamSimple = (...args) => {
+      assert.equal(reserved, true);
+      return original(...args);
+    };
+    const reserve = async request => {
+      assert.equal(execution.options.length, 0);
+      reserved = approved;
+      return { outcome: approved ? "ok" : "rejected", request };
+    };
+    const stream = boundedStream(execution.runtime, execution.model, execution.config, execution.requests,
+      execution.emit, () => {}, 1000, reserve)(execution.model, { messages: [] }, {});
+    for await (const _event of stream) {}
+    assert.equal(execution.options.length, approved ? 1 : 0);
+    assert.equal(execution.requests.count, approved ? 1 : 0);
+    assert.equal(Boolean(execution.requests.failure), !approved);
+  }
+});
+
+test("fresh model context keeps the spent request budget instead of replaying the last request", async () => {
+  const execution = await preparedLive([{ content: [{ type: "text", text: "Checked" }], stopReason: "stop" }], 3);
+  execution.requests.count = 2;
+  const numbers = [];
+  const request = boundedStream(execution.runtime, execution.model, execution.config, execution.requests,
+    execution.emit, () => {}, 1000, async number => {
+      numbers.push(number);
+      return { outcome: "ok", request: number };
+    });
+  for await (const _event of request(execution.model, { messages: [] }, {})) {}
+  for await (const _event of request(execution.model, { messages: [] }, {})) {}
+  assert.deepEqual(numbers, [3]);
+  assert.equal(execution.options.length, 1);
+  assert.equal(execution.requests.failure.outcome, "budget_exhausted");
+  assert.equal(execution.requests.failure.limit, "model_requests");
+});
+
+test("SDK transport retries cannot dispatch a reserved model request twice", async () => {
+  const execution = await preparedLive([{ content: [{ type: "text", text: "Checked" }], stopReason: "stop" }]);
+  for await (const _event of execution.streamFunction(execution.model, { messages: [] }, {})) {}
+  const fetch = globalThis.fetch;
+  let dispatched = 0;
+  globalThis.fetch = async () => { dispatched++; return new Response("prepared"); };
+  try {
+    await execution.options[0].fetch("https://example.invalid");
+    assert.throws(() => execution.options[0].fetch("https://example.invalid"), /retry refused/);
+    assert.equal(dispatched, 1);
+    assert.equal(execution.requests.failure.limit, undefined);
+  } finally {
+    globalThis.fetch = fetch;
+  }
+});
+
+
+test("a reservation reply arriving after timeout cannot start provider work", async () => {
+  const execution = await preparedLive([]);
+  let release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const request = boundedStream(execution.runtime, execution.model, execution.config, execution.requests,
+    execution.emit, () => {}, 25, () => pending);
+  for await (const _event of request(execution.model, { messages: [] }, {})) {}
+  release({ outcome: "ok", request: 1 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  for await (const _event of request(execution.model, { messages: [] }, {})) {}
+  assert.equal(execution.options.length, 0);
+  assert.equal(execution.requests.failure.outcome, "timeout");
+});
+
+
+test("live recovery exposes saved read IDs instead of requiring copied hashes", async () => {
+  const readId = "r12345678-1";
+  const execution = await preparedLive([
+    toolReply("harness_read", { file: "go/import.go" }),
+    toolReply("harness_edit", { file: "go/import.go", operation_id: "repair-1", read_id: readId, old: "one", new: "two" }),
+    toolReply("harness_check", { preset: "xml-leading-bom" }),
+    { content: [{ type: "text", text: "The recorded check passed." }], stopReason: "stop" },
+  ]);
+  const calls = [];
+  await runToolLoop({ task: { id: "saved-read" }, maxToolCalls: 12,
+    verification: { maxAttempts: 2, scope: "frozen-evaluator-v1" }, recovery: { read_references: true } },
+  async request => {
+    calls.push(request);
+    return { outcome: request.name === "harness_check" ? "passed" : "ok", explanation: "Observed result",
+      evidence: "journal.json", file: "go/import.go", operation_id: null, read_id: readId };
+  }, execution.emit, execution);
+  const context = execution.sent.find(event => event.type === "context");
+  const edit = context.tools.find(tool => tool.name === "harness_edit");
+  assert.ok(edit.parameters.required.includes("read_id"));
+  assert.equal(edit.parameters.properties.expected_sha256, undefined);
+  assert.match(context.systemPrompt, /Do not copy or compute SHA-256/);
+  assert.equal(calls[1].args.read_id, readId);
+  assert.equal(calls.length, 3);
 });
