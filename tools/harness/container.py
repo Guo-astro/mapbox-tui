@@ -16,6 +16,7 @@ ENVIRONMENT = {
     "GOPATH": "/go", "GOPROXY": "off", "GOTOOLCHAIN": "local", "GOWORK": "off",
     "GOENV": "off", "GOFLAGS": "-mod=readonly", "CGO_ENABLED": "0",
 }
+NATIVE_ENVIRONMENT = {**ENVIRONMENT, "GOFLAGS": REPOSITORY_GOFLAGS.removeprefix("GOFLAGS=")}
 
 
 class ContainerRun(Run):
@@ -50,8 +51,10 @@ class ContainerRun(Run):
         self.result["image_repo_digests"] = images[0].get("RepoDigests", [])
         self.prepared = True
 
-    def validate_container(self, data, checkout, build_output=False):
+    def validate_container(self, data, checkout, build_output=False, *, native_workspace=False):
         try:
+            if build_output and native_workspace:
+                raise ValueError("Conflicting workspace modes")
             item = data[0]
             config = item["HostConfig"]
             expected = {"NetworkMode": "none", "ReadonlyRootfs": True, "Privileged": False,
@@ -81,7 +84,8 @@ class ContainerRun(Run):
                 raise ValueError("Seccomp profile changed")
             if item["Config"]["User"] != "65534:65534":
                 raise ValueError("Container user changed")
-            if sorted(item["Config"]["Env"]) != sorted(f"{key}={value}" for key, value in ENVIRONMENT.items()):
+            expected_environment = NATIVE_ENVIRONMENT if native_workspace else ENVIRONMENT
+            if sorted(item["Config"]["Env"]) != sorted(f"{key}={value}" for key, value in expected_environment.items()):
                 raise ValueError("Unexpected container environment")
             mounts = item["Mounts"]
             binds = [mount for mount in mounts if mount["Type"] == "bind"]
@@ -89,16 +93,17 @@ class ContainerRun(Run):
                 if binds:
                     raise ValueError("Unexpected host mount")
             elif len(binds) != 1 or binds[0]["Source"] != str(checkout) or \
-                    binds[0]["Destination"] != "/workspace" or binds[0]["RW"] is not False:
+                    binds[0]["Destination"] != ("/input" if native_workspace else "/workspace") or binds[0]["RW"] is not False:
                 raise ValueError("Only the read-only disposable source may be mounted")
-            temporary_paths = {"/tmp", "/workspace/bin"} if build_output else {"/tmp"}
+            workspace_output = "/workspace" if native_workspace else "/workspace/bin"
+            temporary_paths = {"/tmp", workspace_output} if build_output or native_workspace else {"/tmp"}
             if any(mount["Type"] != "bind" and
                    (mount["Type"] != "tmpfs" or mount["Destination"] not in temporary_paths) for mount in mounts):
                 raise ValueError("Unexpected container mount")
-            if build_output:
-                outputs = [mount for mount in mounts if mount["Destination"] == "/workspace/bin"]
+            if build_output or native_workspace:
+                outputs = [mount for mount in mounts if mount["Destination"] == workspace_output]
                 temporary = config["Tmpfs"]
-                options = set(temporary["/workspace/bin"].split(","))
+                options = set(temporary[workspace_output].split(","))
                 required = {"rw", "exec", "nosuid", "nodev", "size=128m", "mode=1777"}
                 if (set(temporary) != temporary_paths or not required <= options or
                         options - required - {"rprivate", "tmpcopyup"} or len(outputs) > 1 or

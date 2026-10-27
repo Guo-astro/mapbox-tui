@@ -1,14 +1,790 @@
 # Developer harness pilot
 
-Current stage: Recover ([#106](https://github.com/adamcbrewer/mapbox-tui/issues/106)).
-Verify (#105) is merged; its learning discussion remains pending.
-Pi now connects an OpenAI subscription model to four controlled tools, with
-prepared examples for checking the wiring without AI. Two live Luna attempts
-are recorded locally: one ineffective repair and one that passed the fixed
-import check. See the [Pi checkpoint and Fish commands](pi/README.md).
-Adam asked to begin Verify after the Pi walkthrough. Earlier recorded review
-questions aren't automatically answered by that decision; passing a test isn't approval.
-The original repair command still runs trusted code on the host.
+I want to know whether the extra code around Pi helps it fix bugs and saves me
+time. Compare ([#107](https://github.com/adamcbrewer/mapbox-tui/issues/107)) is the
+current stage. Recover (#106) is merged and closed.
+
+I've finished the earlier fixed comparisons with Luna. Plain Pi delivered four checked fixes
+out of four; managed Pi delivered three out of four. Both passed the two
+development runs. On the reserved evaluation task, one managed run spent its
+tool allowance before checking. That stays a failure. The automatic retry wasn't
+used in these AI runs, so I can't attribute the difference to retry feedback.
+I recommend keeping plain Pi. My review and decision remain pending.
+
+The earlier extra-guidance comparison also didn't justify adopting its change.
+Clearer timeout feedback helped a small recovery exercise, but that doesn't
+establish better bug repairs. The full local handoff is
+`reports/harness/issue107-final-review.md`. Raw results stay outside Git.
+Earlier Pi setup and live Luna examples are in the [Pi guide](pi/README.md).
+
+## What I measure and what still needs my participation
+
+My normal workflow is to ask an AI to solve the bug and monitor its responses.
+I don't need a baseline where I write the repair myself. The human baseline
+means me supervising an AI, using scripts and asking for corrections as needed.
+Plain Pi still means its normal coding tools inside the same sandbox.
+
+The main measure is how often the exact saved fix passes the independent checks
+within the agreed limits without me steering the repair after launch. My final
+review still matters and its time counts separately. I also want to record:
+
+- Every check-in and how long I spent monitoring, even if I didn't intervene.
+- Corrections, prompts to continue, restarts and requests to run missing checks.
+- Active review/correction time, elapsed time, model requests, tokens and known costs.
+- Failed repairs, interrupted or unfinished runs, and claims that disagree with the checks.
+- Whether I actually left the run unattended, or monitored it without intervening.
+- My judgement after review: would I trust this workflow enough to step away again?
+
+A longer run can still be useful if it needs less attention and returns a checked
+candidate. Context management, recovery and automatic verification are part of
+the workflow being tested. I'll keep task copies, model/settings, environment,
+overall limits and final checking rules fixed, and save each workflow's exact
+configuration before launch. A whole-workflow comparison measures the combined
+effect; it doesn't tell me which individual part caused it.
+
+Stepping away should leave either a candidate with completed check evidence or
+a clear stopping report. It doesn't promise every bug will be solved. A clean
+stop is useful behaviour, but isn't a successful repair. The current ten-minute
+limit also means I haven't demonstrated unattended work lasting hours.
+
+My judgement helps decide whether this is useful. Repeated runs and recorded
+interventions show what that judgement is based on. Old runs didn't measure my
+attention, so I won't reconstruct it from elapsed time or call it zero. The fresh
+supervised Terra session recorded 161 seconds with the replacement watcher open.
+That covers part of the latest run and viewing its result; earlier attention,
+continuous focus and review time remain unknown.
+The distance task and reserved coordinate task have
+completed fixed comparisons. These automated runs don't establish my supervised
+baseline or time saved. The next timed human session needs another fresh task;
+reusing these familiar examples wouldn't establish the same thing.
+
+## How I want these updates written
+
+Use my voice and the `wat` skill's plain-language approach for #107 docs, reports,
+notes and summaries. Lead with what happened and why I should care. Say whether an
+AI ran, what our code did, what passed or failed, and what's still unfinished.
+Explain unfamiliar terms when they first appear. Keep commands and detailed
+status codes available, without making me read raw JSON to understand the result.
+Don't turn passing tests into a claim that I've approved the work.
+
+## Run plain Pi or the managed repair loop
+
+The supervised baseline used the fresh synthetic `geometry-bounds-v1`
+task. Its map limits must enclose the imported geometry without adding unrelated
+locations. It has two visible examples and four private examples covering GPX,
+TCX and KML, with coordinates and geometry preserved. It belongs to a different
+bug family from the earlier XML, latitude and distance tasks.
+
+I selected plain Pi with Terra for this session. Its first attempt passed both
+visible examples, then stopped at the twelve-tool allowance before independent
+checking. Its own full project test ran out of temporary disk space. This stays
+an unchecked failure, with nine requests and every tool outcome retained.
+I explicitly confirmed the watcher was open and later said I was still monitoring;
+I then clarified I had stopped it earlier without recording when. That session's
+timing is unusable; the independently checked repair result remains valid.
+The repeat used a fresh timer. Its local live watcher records a start when opened
+and an end on Ctrl+C or terminal closure. This measures the watcher-open period,
+not continuous focus, and closing it doesn't cancel Pi.
+
+The revised attempts allowed thirty tools and the same ten AI requests and
+ten-minute deadline. Its prompt distinguishes the host's mise setup from the
+sandbox's plain Go commands. Native builds use the checker's serial, consistent
+Go flags so the visible test and full build can share their cache. The memory and
+disk limits stay unchanged. A tool-limit stop can still send the exact saved patch
+to independent checking within the remaining time, without further inference.
+The first failed attempt stays in the record. This is a diagnostic rerun after
+several workflow fixes, not a controlled comparison of one change.
+
+The revised Terra attempt passed all eight independent checks in 316 seconds,
+using five AI requests and seven tools. Its own full build passed inside the
+unchanged resource caps. It corrected one rejected timeout request and received
+no in-run repair correction. The thirty-tool allowance wasn't needed in this
+attempt. A supplied zero-AI example separately proved that call thirty-one is
+blocked and the saved patch can still pass checking after tool exhaustion.
+
+The fresh repeat passed all eight checks in 304 seconds, again using five requests
+and seven tools. The replacement watcher recorded 161 seconds starting partway
+through this run. Earlier watching time is unknown, and that interval doesn't
+establish continuous focus or review time.
+
+These three attempts used different workflow settings, so they don't form a new
+paired comparison or establish time saved. Preparation and calibration make no
+model calls. For a complete timed session, I need to open the watcher before
+inference starts and explicitly record monitoring, away and review intervals.
+The plan and local watcher are recorded in `progress.json`; earlier Luna results
+stay unchanged.
+
+`workflow.py` keeps Pi's normal tools in the sandbox. Both modes use the same
+independent checker. Plain Pi gets no automatic repair feedback. Managed Pi can
+receive one retry prompt after a failed candidate check. It keeps the conversation
+and the remaining budget, then checks the next saved candidate. It never gets the
+private test inputs or known fix.
+
+Each retry keeps separate sandbox setup, tool and removal logs, so its output
+doesn't replace the earlier attempt's evidence.
+
+Using the existing prepared image, saved task suite and subscription settings:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/workflow.py --prepare \
+  --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" \
+  --config /home/adam/localhost/mapbox-tui/tools/harness/pi/config.local.json --mode managed
+```
+
+Read the printed `PLAN_DIR/plan.md`. Use `--mode plain` for the comparison version.
+The plan fixes model/settings, task, tools, image, checking rules and limits before
+inference. It allows one run: ten model requests with the current preferences,
+thirty Pi tools, two candidate checks and ten minutes overall. Checks share that
+time allowance. Provider requests keep their two-minute limit and no transport
+retries. A stopped or failed attempt stays spent.
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/workflow.py --run PLAN_DIR
+```
+
+The launch prints the run folder. Use it for these controls, which make no model
+calls themselves:
+
+```sh
+python3 tools/harness/operator_log.py RUN_DIR status
+python3 tools/harness/operator_log.py RUN_DIR check-in
+python3 tools/harness/operator_log.py RUN_DIR monitoring
+python3 tools/harness/operator_log.py RUN_DIR away
+python3 tools/harness/operator_log.py RUN_DIR paused
+python3 tools/harness/operator_log.py RUN_DIR reviewing
+python3 tools/harness/operator_log.py RUN_DIR finished
+python3 tools/harness/operator_log.py RUN_DIR feedback --message "Please check the expected behaviour again."
+python3 tools/harness/operator_log.py RUN_DIR stop
+```
+
+`status` reads progress and recent assistant responses. A `check-in` explicitly
+records that I looked. State changes record my own account of monitoring, waiting,
+breaks and review; they don't detect attention automatically. `finished` ends my
+timing session. `stop` cancels the running work and preserves its evidence.
+Corrections are taken once, after the current conversation stops, while the
+original request/tool/time allowance remains. A correction after the run ends is
+refused. A completed run's stop control can't signal a later run in the same process.
+
+Attention figures cover only explicitly recorded intervals. Unrecorded time stays
+unknown. Watching without intervening and actually stepping away are different
+observations. The unattended reference runs don't replace a measured session of
+me supervising the AI. Final review and my confidence remain human decisions.
+
+This native-tool workflow keeps context within one process. It doesn't automatically
+resume after a process crash. Its saved patches, attempts and logs remain available
+for inspection, and the one-use plan stays spent. The journalled recovery examples
+below have their own evidence; they don't prove crash recovery for this new path.
+
+To read and validate a completed run without inference:
+
+```sh
+python3 tools/harness/workflow.py --report RUN_DIR
+```
+
+The report keeps failed candidate attempts, their exact patches and independent
+receipts. Model-request exhaustion can still leave a patch that passes checking;
+the stopped conversation and the checked patch are recorded separately. A timeout,
+cancellation, invalid input or missing evidence mustn't become a success claim.
+
+## Compare fixed workflow versions
+
+`workflow_compare.py` saves plain/managed/managed/plain order as two reversed
+pairs. Both use identical broken starting copies and the same prompt, model,
+normal tools, image, limits and final checker. The managed retry feedback is the
+single difference. Its chosen measure is final checked repairs without delivered
+operator corrections; first-repair success is kept separately. Incorrect success
+claims block adoption. A tie favours plain Pi.
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/workflow_compare.py --prepare \
+  --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" \
+  --config /home/adam/localhost/mapbox-tui/tools/harness/pi/config.local.json
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/workflow_compare.py --run EXPERIMENT_DIR
+python3 tools/harness/workflow_compare.py --report EXPERIMENT_DIR
+```
+
+With the current settings, the plan caps the four runs at forty model requests.
+Each cell starts once; there are no replacement attempts. A blocked, cancelled or
+invalid run stops the remaining experiment. Read reports after the experiment
+stops; use `operator_log.py ... status` for a running cell. Reporting makes no
+model calls. Exit 0 means the four attempts finished, not that managed Pi won.
+
+After development choices are fixed, `--case coordinate-latitude-limits-v2` with
+the original saved suite selects the reserved task explicitly. It uses a different
+bug family and checking examples. Keep both workflow versions unchanged for that
+evaluation. Don't use its result to tune the prompt and call that held-out evidence.
+
+The comparison's `claim-review.json` separately records the assistant's inspection
+of model statements against actual tool output and checker results. That isn't my
+approval. Missing billing and human attention remain unknown. Saved results feed
+`evaluate.py` and the later #111 report work without treating a chronological trend
+as a controlled experiment.
+
+## Keep every attempt in the results
+
+I don't want a passing retry to hide the failed repair that came before it.
+`evaluate.py` reads saved run results and checks their supporting files. It makes
+no model calls.
+
+```sh
+python3 tools/harness/evaluate.py
+PYTHONPATH=tools/harness python3 -m unittest test_evaluate -v
+```
+
+The command prints a new `reports/harness/compare/inventories/<id>/inventory.md`.
+Read that first. The neighbouring `inventory.json` keeps the saved results,
+settings, file fingerprints and all recorded check attempts. A fingerprint
+identifies a file's exact contents. Keep the original patches and logs too;
+the inventory doesn't copy every supporting file.
+
+If I record watching or review time after a run ends, the inventory reads that
+separate record too. It keeps a copy and fingerprint without changing the
+original result. If that record can't be read, human time stays unknown and the
+repair's checks still count on their own evidence.
+
+One task can contain several checks. I count the task once, including the time
+and cost of failed attempts. First-attempt success means one repair passed every
+required check. Success by the end of the run can include a retry. A later manual
+check stays separate and doesn't rewrite an earlier failure.
+
+These old runs used different settings and tasks. Their totals don't tell me that
+the harness improved. Missing billing, token usage, corrections or review time
+stay unknown. A focused test passing or the model saying "done" doesn't establish
+that all required checks passed.
+
+To try a successful prepared example and a deliberately changed log:
+
+```sh
+PYTHONPATH=tools/harness python3 -m unittest -v \
+  test_evaluate.VerifiedInventoryTests.test_failed_first_repair_and_successful_retry_count_one_task \
+  test_evaluate.VerifiedInventoryTests.test_changed_check_log_prevents_success_without_rewriting_receipt
+```
+
+Both tests should pass. The first keeps a failed repair and a passing retry as one
+task. The second changes a saved check log and confirms that the old pass stops
+counting. These tests supply fake check replies; no model or Go check runs inside
+them.
+
+Use `--reports PATH` for another local evidence folder and `--output NEW_DIR` for
+a new destination. Existing inventories aren't overwritten. Run this after the
+tasks stop, because it doesn't lock active sessions. Exit 1 means evidence needs
+attention, including missing/unreadable result files or an unconfirmed pass.
+Exit 0 means the inventory found no such problem; failed repairs still stay in it.
+
+## Try automatic checking after the AI runs out of turns
+
+In #106 a fix had been written, but the model had no requests left to ask for
+tests. I compared stopping there with letting our code finish the checks.
+
+The script supplied a working fix and a deliberately bad fix to both versions.
+The tasks, repairs, test rules, container image and limits were the same. Each
+pair ran twice, in reverse order the second time. I saved the plan before running
+it and chose one measure: did the run finish with a fix that passed every required
+check, within its original limits and without another model request?
+
+No repair AI or Pi session ran. Ten request slots were marked spent to reproduce
+the limit. The Go checks ran in real containers.
+
+Using the existing prepared image and rootless Podman setup, from Bash:
+
+```sh
+HARNESS_IMAGE_ID="$(cat /home/adam/localhost/mapbox-tui/reports/harness/prepared-image.id)"
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/compare.py \
+  --prepare --image "$HARNESS_IMAGE_ID"
+```
+
+This checks the runtime, image and Go version, then prints a new experiment
+folder. Its `plan.json` saves the inputs, settings, run order and chosen measure.
+Copy the printed path into:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/compare.py --run EXPERIMENT_DIR
+python3 tools/harness/compare.py --report EXPERIMENT_DIR
+PYTHONPATH=tools/harness python3 -m unittest test_compare -v
+```
+
+Read `EXPERIMENT_DIR/comparison.md`. I expect automatic checking to finish the
+working fix twice, while stopping leaves it unchecked twice. The bad fix must
+never count as successful. Its automatic runs can still end `budget_exhausted`:
+the check failed, and there are no model requests left for another repair.
+"Unchecked" and "checked and failed" are different results.
+
+Changed inputs or an already-started experiment stop execution. If a run is
+interrupted, use `--report` to inspect what happened. A deliberate rerun needs a
+new plan; keep the earlier attempt. The report checks saved results, file
+fingerprints, paired settings and the independent test evidence, including failures.
+
+This prepared example shows that our code can finish checking a working fix.
+I haven't shown better AI repairs or time saved for me. Checking takes extra
+computer time, and my review/correction time and execution billing are unknown.
+
+## Check the bug tasks before asking the AI to fix them
+
+A bad task could make a good repair look wrong, or let a bad repair pass.
+`case_suite.py` makes project copies from one fixed public source commit and
+plants two different kinds of bug:
+
+- **Development:** XML prefix handling in GPX/TCX/KML imports.
+- **Held-out:** latitude validation. This task is saved for evaluation after the
+  development choices are fixed. I won't use its results to tune the prompt.
+
+Each `agent/` project has the broken source and public task. Its sibling
+`private/` folder has the planted-change patch, known answer and extra examples.
+The future Pi connection must give the model only the agent project. One example
+also contains text telling the reader to claim success; it is task data.
+
+```sh
+python3 tools/harness/case_suite.py --prepare
+```
+
+Copy the printed suite folder into `SUITE_DIR` below. Using the existing image
+and rootless Podman setup, from Bash:
+
+```sh
+HARNESS_IMAGE_ID="$(cat /home/adam/localhost/mapbox-tui/reports/harness/prepared-image.id)"
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/case_suite.py \
+  --calibrate SUITE_DIR --image "$HARNESS_IMAGE_ID"
+PYTHONPATH=tools/harness python3 -m unittest test_case_suite -v
+```
+
+The command checks the tasks, a step called calibration, then prints a new
+`calibration.md`. The original code and known fix should pass both the public
+example and the extra private examples. The planted bug and ineffective edit
+should fail both. Each failure must match the intended assertion, so an unrelated
+error can't make a task look ready. No model calls are made.
+
+Each case has the existing 600-second deadline and container cleanup rules.
+Use `--case CASE_ID` with `--calibrate` to check one task. That new batch report
+covers only the selected task; earlier attempts stay saved.
+
+The first coordinate draft didn't reproduce its bug: GPX rejected the input
+before it reached the check I'd changed. That failed draft is retained. Revision
+2 uses KML to reach the intended check. The development task was unchanged, so
+I reused its passing result after comparing its exact files and definition.
+
+The suite file records fingerprints for the project and private files. Changed
+files and missing required subtests are refused. Results live under
+`reports/harness/case-calibration/`; batch reports live under
+`reports/harness/case-calibration-batches/`. Keep the projects, results and logs.
+
+I've chosen normal Pi coding tools inside the same sandbox for the plain-Pi
+baseline. Connecting those tools and running actual repair attempts are next.
+These prepared tasks don't establish AI repair skill, time saved or how a model
+reacts to the misleading text. My review is still pending.
+
+The [shared glossary and file guide (#111)](https://github.com/adamcbrewer/mapbox-tui/issues/111)
+explains the evidence files.
+
+## Prepare a fresh bug for the supervision comparison
+
+I don't need to wait for a real bug. The `segment-distance-v1` task deliberately
+breaks journey distance in a disposable copy. Separate recording sections should
+keep their own points and distances; the travel across a gap must not be counted.
+The visible example covers a continuous journey and two separate sections.
+Private checks cover other section shapes and GPX, TCX and KML examples.
+All coordinates are invented.
+
+```sh
+python3 tools/harness/case_suite.py --prepare --catalogue segment-distance-v1
+```
+
+Copy the printed suite folder into `SUITE_DIR`. Using the existing prepared image:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/case_suite.py \
+  --calibrate SUITE_DIR --case segment-distance-v1 --image "$HARNESS_IMAGE_ID"
+```
+
+This supplies a known fix; it doesn't ask an AI to solve the bug. The original
+and known fix must pass both check sets. The planted bug and an edit that doesn't
+fix it must fail on the intended assertion. `calibration.md` explains all eight
+results. The original catalogue remains the default, and saved older suites
+still load. This new development task doesn't consume the held-out task.
+
+Task preparation and a live comparison are separate. The full checker now
+selects the registered task's planted change, visible test and private checking
+examples. It still checks the exact saved patch in a fresh copy, then formatting
+and the repository tests. The XML task remains the default. Changed task inputs
+or checking rules stop the run.
+
+To exercise that connection with supplied repairs through actual Pi tools:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/native_run.py \
+  --suite SUITE_DIR --image "$HARNESS_IMAGE_ID" --demo good --verify
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/native_run.py \
+  --suite SUITE_DIR --image "$HARNESS_IMAGE_ID" --demo wrong --verify
+```
+
+Expect the good fix to pass all eight independent checks (exit 0). The bad edit
+must fail its candidate test and stay failed (exit 1); later checks should say
+not run. The script supplies both edits. These commands don't use a repair AI.
+For a standalone saved patch, `verify.py --suite SUITE_DIR --image IMAGE_ID
+--patch PATCH_FILE` selects the same registered checking inputs.
+
+Before the live comparison, both workflows still need a saved protocol and a
+way to record my check-ins, interventions and review. Both must receive identical
+broken copies, with private answers kept outside their sandbox. This connection
+doesn't demonstrate a supervised or unattended AI repair. No human timer starts
+during preparation.
+
+## Check normal Pi tools inside the sandbox
+
+I chose Pi's normal coding tools for the plain-Pi baseline: `read`, `edit`,
+`write` and `bash`. `native_run.py` connects the actual Pi SDK tools to a
+disposable project inside the container. The script supplies the calls for now.
+No repair AI runs, and this doesn't complete the comparison.
+
+The known fix should pass the public XML import test. The deliberately bad fix
+should fail that same test with the planted prefix bug. The boundary check tries
+host/private-file reads, normal file edits and commands, network access and a
+Python module planted in the project. It checks that our worker keeps running
+trusted code while the tools operate on the task files.
+
+From this checkout, with the existing prepared image and the locked Pi
+dependencies already available:
+
+```sh
+HARNESS_IMAGE_ID="$(cat /home/adam/localhost/mapbox-tui/reports/harness/prepared-image.id)"
+HARNESS_CASE_SUITE=reports/harness/case-suites/runs/f13f59cdb94441189474216479b9141e
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/native_run.py \
+  --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" --demo good
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/native_run.py \
+  --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" --demo wrong
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/native_run.py \
+  --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" --demo probe
+```
+
+Use the suite path printed by `case_suite.py --prepare` if you're preparing a
+new checkout. The saved suite above is local to this worktree. Pi setup is in the
+[Pi guide](pi/README.md); these prepared checks need no sign-in. I reused the
+installed dependency tree after checking that its package and lock files matched.
+I didn't download packages or run install scripts for this step.
+
+Each command prints a new `normal-tools.md` under
+`reports/harness/native-tools/runs/<id>/`. Read that first. The neighbouring
+session, source snapshot, proposed patch and command logs keep the details.
+Exit 0 and `native_tools_ready` mean the supplied sequence matched its expected
+results. For `wrong`, that includes the test failing for the intended reason.
+They don't mean that a repair passed independent checking. A startup, snapshot,
+cleanup or unexpected tool failure stops the check instead.
+
+The host source copy stays read-only at `/input`. Changes happen in temporary
+container storage at `/workspace`. Known fixes and private test examples aren't
+mounted. Pi's file and command operations go through the sandbox connection;
+Node can't launch host commands or use the network. The SDK also needs read
+permission for `/workspace/*` to look up edit paths. File contents still go
+through the sandbox. Only output files created by the SDK in this run's temporary
+folder can be read back locally.
+
+The existing container limits stay in place: no network, an unprivileged user,
+no added capabilities, 1 GiB memory and 256 processes. This prepared check allows
+12 Pi tool calls, 100 sandbox operations and 600 seconds. Requests are limited
+to 64 KiB, reads and command output to 1 MiB. Images aren't part of these text
+tasks, so the read tool's image processing isn't enabled. This is normal Pi tool
+behaviour within those explicit task limits, not unrestricted host access.
+
+The [npm security guide](https://github.com/lirantal/npm-security-best-practices)
+informs this setup: keep locked versions and install scripts disabled, and keep
+task execution isolated from host credentials. No dependency versions, release
+cooldown or install policy changed here.
+
+```sh
+PYTHONPATH=tools/harness python3 -m unittest test_native test_container -v
+node --test tools/harness/pi/loop.test.mjs tools/harness/pi/native.test.mjs
+```
+
+The Python checks exercise path escapes, limits, tool ownership, project
+snapshots and container settings. The SDK checks preserve normal schemas and
+edits, retain failed command results and limit local reads to SDK output files.
+They use supplied replies. The commands above run the tools in a real container.
+The held-out coordinate task stays unused until the development choices are fixed.
+
+## Check Pi's saved fix independently
+
+I can now add `--verify` to a prepared normal-tool run. Pi's tools stop and their
+container is removed before our existing checker starts. The checker applies the
+exact saved patch to a fresh source copy. Its tests and extra examples stay
+outside Pi's project.
+
+I fix the checking rules before starting Pi's tools. Both parts share the original
+600-second deadline, and each prepared run permits one independent check. A patch,
+source snapshot, task or check log that doesn't match its recorded contents can't
+count as a success. Cleanup must also be confirmed.
+
+Using the same image and task-folder variables as above:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/native_run.py \
+  --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" --demo good --verify
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/native_run.py \
+  --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" --demo tailored --verify
+```
+
+The known fix should pass all eight required checks and exit 0, labelled
+`native_verification_passed`. Those checks cover original, broken and repaired
+code on the visible and extra import examples, then formatting and repository
+tests on the repair. The deliberately broken versions must fail their tests for
+the intended reason.
+
+The `tailored` repair is a misleading shortcut: it handles only the filenames in
+Pi's visible examples. Pi's own test should pass, but the checker's different
+filenames should expose it. Expect exit 1, labelled `repair_failed`. The
+`normal-tools.md` report shows which checks ran, which failed and which weren't
+reached. Its neighbouring saved result links the exact independent-check receipt.
+
+These are supplied repairs through real Pi tools and real container checks.
+No repair AI runs. This doesn't establish AI repair skill, my approval or time
+saved. Execution billing and my review time stay unknown. The held-out task is
+still unused; this connection supports the pinned development task only.
+
+```sh
+PYTHONPATH=tools/harness python3 -m unittest test_native_check test_native -v
+```
+
+Those Python tests supply check outputs. They exercise the link between the
+saved change and the checker, including damaged evidence, changed rules,
+cancellation and the shared deadline. Keep the actual run logs for evidence
+that the Go checks ran.
+
+## Save and run one real plain-Pi baseline
+
+I can now ask a real subscription model to repair the development task using Pi's
+standard coding prompt and normal tools. This is one baseline pilot. I haven't
+run a matched harness version or established that the harness helps.
+
+`baseline.py --prepare` saves the task, actual standard prompt, normal tool
+definitions, exact model settings, image, checking rules and limits. It previews
+Pi offline and checks the prepared Go image. It makes no repair-model call.
+
+Using the existing task folder, image and locally selected model preferences:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/baseline.py --prepare \
+  --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" \
+  --config /home/adam/localhost/mapbox-tui/tools/harness/pi/config.local.json
+```
+
+Copy the printed plan folder into:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/baseline.py --run PLAN_DIR
+```
+
+The second command can make real model requests. A plan starts one attempt.
+Reusing it is refused, even if the first attempt stopped. Changing the saved
+plan, task, implementation, actual prompt or tools also stops the run. A new
+attempt needs a deliberate new plan; this command doesn't create one for me.
+
+The existing preferences are Luna with subscription access, low reasoning, ten
+requests, twelve tool calls, two minutes per request and ten minutes overall.
+The saved output-token preference is preserved. No automatic transport retry or
+model substitution is allowed. Each request is saved against its limit before
+it can be sent. API-key billing isn't a fallback.
+
+Pi's model process can contact the provider and use the existing Pi sign-in file.
+It can't launch host commands. All coding-tool operations still go through the
+sandbox connection; the project container has no network or credentials. Known
+fixes and extra checker examples stay outside it. The read tool can only read
+host output files the SDK itself created for this run. The
+[npm security guide](https://github.com/lirantal/npm-security-best-practices)
+informs these boundaries; locked dependencies, disabled install scripts and the
+existing release cooldown stay in place.
+
+The chosen measure is whether the saved patch passes every independent check
+inside the original ten-minute deadline. The common checker runs after Pi stops,
+gets no extra time and sends no repair feedback to Pi. The conversation's stop
+reason and the patch's check result stay separate. A retained patch can still be
+graded after a model-request stop if time remains. A claim of success doesn't
+count without the matching check evidence.
+
+Read the printed `baseline.md` first. Its folder keeps the exact plan reference,
+actual context, conversation, request reservations, patch, project snapshots and
+check logs. Tokens come from reported provider usage; missing usage and billing
+stay unknown. Model billing, execution billing and my review time are separate.
+The held-out task stays unused, and my learning review remains pending.
+
+```sh
+PYTHONPATH=tools/harness python3 -m unittest test_baseline -v
+node --test tools/harness/pi/loop.test.mjs tools/harness/pi/native.test.mjs
+```
+
+These tests use supplied replies. They exercise plan reuse, changed context,
+request reservations, limits, normal-tool payloads and failed-session reporting
+without a repair-model call.
+
+## Compare the container-tooling guidance
+
+The live pilot wasted calls looking for host tools inside the container. I want
+to test one added paragraph that explains which tools are available and that the
+host `mise` prefix doesn't apply there. It gives no fix or hidden-test hints.
+The original task and approved repository instructions stay intact.
+
+`paired.py` saves four fresh runs: baseline, guidance, guidance, baseline. They
+form two pairs in reversed order. The pilot isn't included. Both versions keep
+the same standard Pi system prompt, normal tools, task, model, reasoning, image,
+request limits and independent checker. The only input change is the saved
+guidance paragraph. Preparation checks its tool-availability claims against the
+actual container before any model request.
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/paired.py --prepare \
+  --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" \
+  --config /home/adam/localhost/mapbox-tui/tools/harness/pi/config.local.json
+```
+
+Copy the printed experiment folder into:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/paired.py --run EXPERIMENT_DIR
+```
+
+This can make four real model attempts. Each keeps the existing ten-request,
+twelve-tool and ten-minute limits, including its common checker. The whole
+experiment allows at most forty model requests with the current preferences.
+It runs in the saved order without replacement attempts. Cancellation, a blocked
+environment or invalid evidence stops the remaining runs. A spent experiment
+can't start again.
+
+I chose failed Pi tool calls as the main measure before running the comparison.
+A useful result needs fewer failures in both pairs, with all four conversations
+finishing and all four exact repairs passing every required check. I also keep
+requests, total tools, reported tokens and elapsed time. Fewer errors alone can't
+make an unchecked repair count as an improvement.
+
+Read `comparison.md` and `plan.md` in the printed folder. The numbered `cells`
+folders keep each one-use plan and run identity. Saved receipt fingerprints,
+actual contexts, model reservations and independent logs must match before a
+passing result counts. Missing runs or usage stay missing; failed attempts aren't
+replaced or dropped from the report.
+
+After the experiment has stopped, rebuild the report without inference:
+
+```sh
+python3 tools/harness/paired.py --report EXPERIMENT_DIR
+PYTHONPATH=tools/harness python3 -m unittest test_paired -v
+```
+
+Reading a historical report validates its saved plans and receipts. It doesn't
+require today's reporting code to match the old execution code. Starting model
+runs still requires the exact saved implementation. The executed source copies
+stay with this experiment, and changing the reporter doesn't rewrite receipts.
+
+Exit 0 from reporting means all four runs finished; it doesn't approve the
+guidance change. I still need to inspect the model's testing claims and record
+my decision. Two pairs on one synthetic task don't establish general repair
+skill or time saved. Billing and my review time stay unknown. The held-out task
+and human baseline remain pending.
+
+## Explain an invalid timeout clearly
+
+The guidance experiment repeatedly stalled on timeout values that looked like
+milliseconds. Pi's Bash tool expects seconds. The old refusal only said the
+timeout was invalid, so it gave the model little help correcting the request.
+
+The refusal now states the units, the permitted range (greater than zero and at
+most 600 seconds), the default of 120 seconds and an example: two minutes is
+120. The original run deadline can still shorten an accepted timeout. The
+runner rejects an oversized request; it doesn't guess a conversion or execute
+the command with a larger limit.
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/native_run.py \
+  --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" --demo timeout
+python3 tools/harness/pi_integration_test.py
+```
+
+The prepared example sends `timeout: 120000`, expects a refusal, then supplies
+`timeout: 120`. The second command checks that the rejected command never wrote
+its marker file. Expect exit 0 because that failure and correction matched the
+expected results. Read the printed `normal-tools.md` and neighbouring session.
+Both calls count against the existing tool limit; no extra model request or
+automatic retry is granted.
+
+The integration tests use the actual Pi SDK and Python connection with supplied
+check replies. The prepared example uses a real sandbox. Neither asks a repair
+AI to choose the correction. These checks establish that the error reaches Pi
+and a corrected call works. They don't establish that the clearer message saves
+model requests, improves repairs or saves my time.
+
+## Compare recovery from the same supplied timeout mistake
+
+`timeout_recovery.py` saves four fresh live runs: generic error, clear error,
+clear error, generic error. Each starts with the same supplied invalid `pwd`
+request (`timeout: 120000`). Actual Pi tools refuse it before execution. The
+live AI gets that request and its error quoted in the prompt, then chooses its
+own correction. The supplied failure isn't an earlier AI action and doesn't
+count as an AI mistake. It uses one of the existing twelve tool calls.
+
+Only the quoted feedback and the refusal text differ. The model, standard Pi
+tools, task, sandbox image, settings and limits stay fixed. The main measure is
+repeated invalid timeouts after the supplied failure. A useful result needs fewer
+repeats in both pairs, with every conversation finishing inside ten minutes and
+actually executing `pwd` without changing project files. If both versions recover
+immediately, I haven't measured an advantage.
+
+Using the existing image, suite and subscription configuration:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/timeout_recovery.py \
+  --prepare --suite "$HARNESS_CASE_SUITE" --image "$HARNESS_IMAGE_ID" \
+  --config /home/adam/localhost/mapbox-tui/tools/harness/pi/config.local.json
+```
+
+Read the printed folder's `plan.md` before starting it:
+
+```sh
+systemd-run --user --quiet --wait --pipe --collect --same-dir \
+  -p 'Delegate=cpu memory pids' python3 tools/harness/timeout_recovery.py --run EXPERIMENT_DIR
+python3 tools/harness/timeout_recovery.py --report EXPERIMENT_DIR
+PYTHONPATH=tools/harness python3 -m unittest test_timeout_recovery -v
+```
+
+The saved plan allows one attempt, with no replacement runs. Ten requests per
+run means at most forty across the comparison. A blocked, cancelled or invalid
+run stops the remaining work. Every run retains the two-minute request limit,
+ten-minute overall limit and original output-token setting. No automatic retries.
+
+`comparison.md` checks the actual sandbox command and output, unchanged project
+snapshot, model reservations, frozen prompt and container cleanup. Supplied and
+live Pi sessions are saved separately. Changed receipts can't keep an earlier
+pass; a spent plan can't start more model calls. Reporting sends no requests.
+Exit 0 means all four attempts finished, not that clear feedback won.
+
+This is a small request-recovery test. It doesn't measure bug repair, everyday
+work or my time saved. The held-out bug task and human baseline stay unused.
+Billing and my review time remain unknown unless measured.
+
+The first saved comparison met that narrow measure. The generic error led Luna
+to repeat `120000` once in each run. With clear feedback, it chose `120` straight
+away in both runs. All four eventually executed `pwd`, reported `/workspace`
+correctly, left the project unchanged and removed their containers. Generic
+feedback used six model requests and 7,881 reported tokens; clear feedback used
+four requests and 5,298 tokens. This supports keeping the clearer error for this
+recovery example. It doesn't establish better bug repairs or my time saved.
+My review remains pending. The local comparison is under
+`reports/harness/timeout-recovery/experiments/b17e131160584b558dfc7f7429ec15e9/`.
 
 ## Recover a prepared session
 
@@ -794,7 +1570,7 @@ stages and run timelines aren't built yet. Runtime-readiness records stay separa
 
 ```sh
 python3 -m unittest discover -s tools/harness -p 'test_*.py'
-node --test tools/harness/pi/loop.test.mjs
+node --test tools/harness/pi/loop.test.mjs tools/harness/pi/native.test.mjs
 python3 tools/harness/pi_integration_test.py
 make test
 ```
