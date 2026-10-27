@@ -1,7 +1,7 @@
 id = "paper"
 name = "Paper"
 background = "#ecece8"
-surface = "#f3f3ef"
+surface = "#ecece8"
 selected = "#dde2db"
 text = "#343441"
 muted = "#676b65"
@@ -14,7 +14,7 @@ activities = ["#20212b", "#5b3197", "#065165", "#70366f", "#3e4777", "#204994"]
 
 [map]
 none = "#676b65"
-water = "#a8b8b5"
+water = "#666666"
 road = "#d4d6cf"
 major_road = "#c6c8c1"
 place = "#676b65"
