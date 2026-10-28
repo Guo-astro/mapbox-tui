@@ -64,6 +64,13 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(result["source"]), b"source")
         self.assertEqual(result["invalid"], ["linked", "pipe"])
 
+    def test_snapshot_captures_the_host_selected_cli_source(self):
+        (self.root / "go").mkdir()
+        (self.root / "go/import.go").write_text("unchanged parser")
+        (self.root / "go/cli.go").write_text("candidate CLI")
+        result = worker.dispatch({"op": "snapshot", "source_file": "go/cli.go"})["source"]
+        self.assertEqual(base64.b64decode(result), b"candidate CLI")
+
     def test_bash_returns_combined_output_and_nonzero_exit(self):
         result = worker.bash("printf hello; printf error >&2; exit 7", 2)
         self.assertEqual(base64.b64decode(result["output"]), b"helloerror")
@@ -133,6 +140,17 @@ class NativeProtocolTests(unittest.TestCase):
 
 
 class PreparedDemoTests(unittest.TestCase):
+    def test_cli_probe_and_timeout_reports_do_not_claim_a_repair(self):
+        for demo in ("probe", "timeout"):
+            with self.subTest(demo=demo):
+                result = {"outcome": "native_tools_ready", "task": "cli-inspect-v1", "candidate": demo,
+                          "containers": [], "tool_results": [], "snapshot_scope_valid": True}
+                report = native_run.render(result)
+                self.assertIn("No repair AI ran", report)
+                self.assertNotIn("changes the bad default", report)
+                self.assertNotIn("expected repair failure", report)
+                self.assertIn("invalid timeout" if demo == "timeout" else "boundary checks", report)
+
     def test_bounds_good_demo_restores_the_reference_source_and_wrong_demo_keeps_the_bug(self):
         with tempfile.TemporaryDirectory() as temporary:
             run = Run(Path(temporary))
