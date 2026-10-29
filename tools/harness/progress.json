@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "updated_at": "2026-10-29",
-  "source": "Adam selected #111 and asked to finish its implementation, then stop for review, in chat on 29 October 2026. Issue: https://github.com/adamcbrewer/mapbox-tui/issues/111.",
+  "source": "Adam selected the planted modal/import task and requested the full remaining #110 implementation in chat on 29 October 2026.",
   "stage": "Extend",
   "status": "awaiting-review",
-  "next": "Review the #111 project progress, real run timeline and labelled synthetic comparisons; discuss the five learning questions. No later stage, human acceptance or issue closure is inferred.",
+  "next": "Review the verified viewer repair, deliberate failure and captures. Discuss visual judgement, setup failures and the opt-in retention recommendation; final learning acceptance remains pending.",
   "decisions": [
     "This is a developer tool, separate from the shipped map app. Pi tool wiring is being checked with prepared responses before live AI calls.",
     "Define (#103) is closed. Adam selected Connect (#104) as the next stage on 22 October 2026. This records the decision to advance, not unrecorded answers to the learning questions.",
@@ -52,7 +52,7 @@
     "The recovery code review found a cancel/publication race and malformed-journal stale success. The fixes serialize cancellation with final publication, validate journal structure, recheck final source/evidence, and keep reconstruction refusals separate from historical receipts. Per-entry Pi logs and observed partial patches are retained. Learning review remains pending.",
     "Prepared recovery evidence: lost-reply run ace0957e6c98443188c6f84996eacdb8 resumed in 285.6675 seconds, failed its first repair then passed all eight checks on the second; all 16 containers were removed. Deliberate conflict 4e5b34fac4c1471682c62b0ee1536be9 preserved the human change and removed all three setup containers. Final checks passed 169 Python tests (24 recovery), 17 Pi tests, one SDK integration and root make test format-check. The passing real run predates the final malformed-entry validation and navigation-label fixes; the final Python suite covers those fixes. Handoff posted at https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6383961829. Work is local and uncommitted; #106 and learning review remain open.",
     "Adam asked to commit the prepared recovery work and explain the takeaways and next step. This authorises the commit; it does not supply unrecorded learning-checkpoint answers or authorise a live model recovery run.",
-    "After committing the prepared slice as decd1d6, Adam said “great, let's go” in response to the proposed walkthrough and live recovery extension. This authorises implementing the live path and one bounded recovery demonstration using the existing Luna subscription preferences: ten model requests, twelve tools, two repairs, 600 seconds, two-minute requests and no hard output-token cap. It does not invent learning answers or stage acceptance.",
+    "After committing the prepared slice as decd1d6, Adam said \u201cgreat, let's go\u201d in response to the proposed walkthrough and live recovery extension. This authorises implementing the live path and one bounded recovery demonstration using the existing Luna subscription preferences: ten model requests, twelve tools, two repairs, 600 seconds, two-minute requests and no hard output-token cap. It does not invent learning answers or stage acceptance.",
     "Live recovery now reserves each numbered model request durably before Node can dispatch it. An uncertain request stays spent across fresh contexts. Saved model identity, twelve tools, two repairs and the original deadline are retained. The review found malformed provider-usage records could break finalization; restoration now refuses them and finalization records incomplete evidence instead of crashing. Before the bounded live demonstration, 176 Python tests (31 recovery), 21 Pi tests, one SDK integration and root make test format-check passed.",
     "Bounded Luna subscription run 250b7c99934f407fa025ca9d485b6c9f used seven requests in its first context and the remaining three after fresh-context resume, then stopped as budget_exhausted. Both proposed edits supplied mistyped SHA-256 values and were refused. Disk had not changed; the initial description of an out-of-date hash was corrected after inspecting the receipts. Eight tool calls, zero edit intents, zero verification attempts and all three containers removed. Complete usage: 68,105 input tokens (8,064 cached), 907 output, 69,012 total, zero reported reasoning tokens. Wall time across both entries was 234.5568 seconds including the pause. The planned after-write fault was never reached. This demonstrates durable live budgets and fail-safe edit refusal, not successful live repair or applied-edit recovery. Another live run was not started after the configured limit.",
     "Live recovery implementation and its deliberately bounded failure are documented at https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6384588837. The recommended next change is a saved-read reference while retaining Python-owned full-hash checks. New implementation remains uncommitted; no extra live run or budget increase was made.",
@@ -65,7 +65,7 @@
     "The runner now distinguishes actual model-request exhaustion from transport, output and tool failures. At the saved model limit, it can request one ordinary journaled harness_check for a pending edit and complete from exact independent receipts without a final model explanation. Cancellation, deadline, tool allowance, file reconciliation and unfinished-check stops retain their existing gates. 192 Python tests (45 recovery), 22 Pi tests, one SDK integration and root make test format-check passed before the real-check demonstration.",
     "Automatic final-check demonstration c3ce8647f5394495a7c4a33a4742b1a7 used the exact saved Luna patch with a simulated exhausted model allowance and real independent Podman checks. The runner requested the ordinary third tool itself, passed all eight checks in bf883e034a1e47cb9f466373c4125cb0 and published verified_repair_passed with matching receipts. Duration 279.1509 seconds, all twelve containers removed, zero actual model calls. Original exhausted receipts are unchanged. Separate review found no actionable bugs. Handoff: https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6385077805. This is prepared boundary evidence; no new live-model run was made. Learning review remains pending.",
     "Adam asked whether recovery was behaving as expected, which budgets applied and how to get a successful repair. The explanation distinguished safe recovery from model repair quality. The saved second Luna patch then passed separate verification; the automatic final-check extension now tests it without spending another model request. Adam asked for simpler explanations twice, so the Recover report must explain outcomes without requiring JSON or a separate chat explanation.",
-    "After asking what remained, Adam said “cool, let's go!” to the report, learning walkthrough and publication plan. This authorises the readable Recover report, commit, push and PR. It does not supply answers to the learning questions or authorise issue closure or moving to Compare. The report now includes recovery sessions and their saved journals, labels live versus prepared examples, preserves refused resumes as historical evidence and links the shared glossary.",
+    "After asking what remained, Adam said \u201ccool, let's go!\u201d to the report, learning walkthrough and publication plan. This authorises the readable Recover report, commit, push and PR. It does not supply answers to the learning questions or authorise issue closure or moving to Compare. The report now includes recovery sessions and their saved journals, labels live versus prepared examples, preserves refused resumes as historical evidence and links the shared glossary.",
     "Readable Recover report now includes recovery receipts and journals, explains each deliberate stop/reconciliation/check result, distinguishes real model work from prepared limits and retains evidence in a portable sealed snapshot. The report review found malformed top-level state, linked check output and invalid saved model settings could mislead or block reporting. Structure and link guards plus per-session error handling address those findings; the follow-up review found no actionable bugs. All 200 Python tests (34 report tests) and root make test format-check passed. Browser checks at 1280px and 390px confirmed readable results, intact section links, journal selection and explanations for every new evidence file. Findings: https://github.com/adamcbrewer/mapbox-tui/issues/106#issuecomment-6385345752. No new model call or uploaded telemetry. The first learning question is open in chat; no answer or approval has been inferred. The branch is being committed, pushed and proposed for review as authorised.",
     "All four Recover learning questions have been discussed with Adam and his answers retained verbatim with clarifications. The discussion covered duplicate/overwritten edits after lost replies, checking actual file bytes against saved fingerprints, preserving written changes on cancellation, and investigating incomplete evidence before deciding to resume or start fresh. Adam correctly identified changed criteria and exhausted constraints as reasons to reconsider resume. The learning checkpoint is discussed and awaiting his explicit reviewed decision. At code commit 6b6ff8e, all five GitHub checks passed and Codex reported no findings; branch approval remains a separate review requirement.",
     "Adam requested commit/push/PR updates, issue checklist updates, simplify and review-stack subagents, and monitoring for feedback. Simplify changed only report.py: explicit branches replace nested recovery/stage selections, preserving wording and branch priority. All six stage HTML outputs are byte-for-byte identical under a fixed timestamp. The review-stack subagent reviewed all sixteen feature files with core, completeness, failure-path, security-history, security and test-analysis passes; no actionable findings or unresolved code defects. It ran 95 focused Python and 22 Node tests. Parent verification passed 200 Python tests,22 Pi tests,1 SDK integration and root make test format-check. An additional end-to-end offline reservation/exhaustion integration test is optional, not a completion gate. The issue checklist now records twenty completed tasks; reviewed decision and report-alone walkthrough remain unchecked. Monitoring is for PR #115; no issue closure or next stage is inferred.",
@@ -87,15 +87,15 @@
     "I asked to keep progressing through the rest of #107 and save review/reflection for the end. Only ask for intervention when it is absolutely required; otherwise make the smallest workable assumption. I also asked for periodic progress updates in the conversation. This authorises the remaining bounded implementation and evaluations within #107, not invented human measurements, stage approval or automatic advancement to #111/#108.",
     "On 28 October 2026 Adam answered \"Yes, proceed with supervised use\" when asked about the #107/#111 learning-review gate. This selects #108 without inventing missing discussion answers, review time or acceptance of a candidate repair.",
     "Adam selected #109 after #108 was closed as completed. He agreed the intended CLI/MCP contract before implementation. This records permission to extend the workflow, not unrecorded discussion answers or acceptance of the resulting patch.",
+    "Adam requested a full send of #110 on 29 October 2026, authorising the remaining viewer implementation. This does not record unasked learning answers or final approval.",
     "Adam asked to finish the remaining #111 reporting work, then stop for review. Reporting reuses saved receipts and journals, makes no new model calls, retains unknown billing and human time, and leaves the learning checkpoint awaiting discussion. Older referenced comparison folders are not present in the available local evidence; their results are not reconstructed from prose."
   ],
   "blockers": [],
   "questions": [
-    "Are fixes becoming more reliable, or are the tasks getting easier?",
-    "Does fewer retries actually mean less human effort?",
-    "Which failures are the model's, the tools', the environment's or the verifier's?",
-    "How much evidence would justify keeping a harness change?",
-    "What should stay local, and what is safe to retain as a public snapshot?"
+    "Which claims can structured state assertions prove, and which need visual review?",
+    "Is a failure a regression, a timing problem or a broken test environment?",
+    "How do we avoid fixing a test's timing rather than the product bug?",
+    "Is automation saving enough effort to justify the extra upkeep?"
   ],
   "provider_scope": [
     "openai"
@@ -539,6 +539,67 @@
     "comparison": "reports/harness/issue109-comparison.json",
     "corrections": [],
     "review_stack": "reports/harness/issue109-review-stack.md"
+  },
+  "viewer_learning_review": {
+    "issue": 110,
+    "status": "synthetic-checked-awaiting-review",
+    "recipe": "tools/harness/VIEWER_RECIPE.md",
+    "task": "modal-import",
+    "task_agreed": "29 October 2026, chat",
+    "reviewed_decision": null,
+    "model_calls": 8,
+    "attention_seconds": null,
+    "review_time_seconds": null,
+    "limits": [
+      "One synthetic repair, not a general repair-quality or time-saving claim.",
+      "Earlier incomplete/cancelled AI attempts remain counted.",
+      "Viewer image and twenty-minute budget differ from earlier ten-minute recipes.",
+      "Human visual quality review, monitoring/review time, billing and final acceptance remain unrecorded."
+    ],
+    "calibrations": [
+      "reports/harness/viewer-calibration/runs/72544c9d77274fec91d1dab4a48eaa44",
+      "reports/harness/viewer-calibration/runs/904c1544cb464ebdb1d3b14aaf376349"
+    ],
+    "blocked_example": "reports/harness/issue110-missing-binary/result.json",
+    "cancelled_example": "reports/harness/issue110-cancel-example/cancellation.json",
+    "hard_stop_example": "reports/harness/viewer-hard-stop/runs/0643e02a2ede41aeaef6604c59a00afe/result.json",
+    "verification": "reports/harness/verification/runs/6bdf9283f7164332b890d9722642cd1e/result.json",
+    "run": "reports/harness/workflows/runs/46aa631215de4dfda242c8fcb225d565",
+    "plan": "reports/harness/workflows/plans/c178065e2eaf43bdabd0eef96ba88591",
+    "suite": "reports/harness/case-suites/runs/ce4068365cbc43b29daf75af8db5b5a2",
+    "image": "sha256:d61adbe3220ade21ccb77d2111b316bed4349868874ea1e03921ae85b6359c6e",
+    "model": "gpt-6.1-terra",
+    "mode": "plain",
+    "outcome": "native_verification_passed",
+    "duration_seconds": 918.6097,
+    "model_requests": 8,
+    "tool_calls": 14,
+    "patch_sha256": "a45081ebf96aa55d9ba9ce600ea114d2ce542be4d2ffcd643f19b4af994e173f",
+    "handoff": "reports/harness/issue110-handoff.md",
+    "verification_receipt": "reports/harness/issue110-completion.json",
+    "failure_example": {
+      "run": "reports/harness/native-tools/runs/2055f72ed8734daa84a36b3bc310991a",
+      "outcome": "repair_failed",
+      "expected": true,
+      "candidate_source": "supplied; no repair AI"
+    },
+    "earlier_ai_attempts": [
+      {
+        "run": "reports/harness/workflows/runs/055ed3218ecf4e1eb23a3a3a9f7c5d12",
+        "outcome": "incomplete",
+        "reason": "Generated reports and Python bytecode made the source snapshot invalid. Retained; no successful repair claim."
+      },
+      {
+        "run": "reports/harness/workflows/runs/8eb55a6a4b0b4b13a01a87d5b7e8ef06",
+        "outcome": "cancelled",
+        "reason": "Stopped to disable Python bytecode before another invalid source snapshot. Retained and counted."
+      }
+    ],
+    "container_calibration": "reports/harness/case-calibration-batches/runs/bd7614c777794af288077220111a2f12/calibration.md",
+    "import_regression": "reports/harness/case-calibration-batches/runs/99b2df9e7b8543708bcebcce3fbf2855/calibration.md",
+    "contract_regression": "reports/harness/case-calibration-batches/runs/4208e8b8c14344788a79b1837aaf1cd7/calibration.md",
+    "missing_terminal": "reports/harness/case-calibration-batches/runs/892d0e9e4c884e9cbfaa62b4e667c0a6/calibration.md",
+    "retention_recommendation": "Keep this opt-in for reproducible viewer regressions. Full validation is slow; one synthetic success does not justify general reliability or time-saving claims. Final decision awaits Adam."
   },
   "reporting_review": {
     "issue": 111,
